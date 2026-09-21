@@ -1,0 +1,580 @@
+package com.example.splitwiseauto
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import com.example.splitwiseauto.ui.theme.SplitWiseAutoTheme
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+
+data class Transaction(
+    val bank: String,
+    val type: String,
+    val amount: String,
+    val date: String,
+    val merchant: String,
+    val balance: String,
+    val upi: String,
+    val accountIdentifier: String? = null,
+    val confidence: ParseConfidence = ParseConfidence.MEDIUM,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val receivedAtMillis: Long = System.currentTimeMillis()
+)
+
+enum class ParseConfidence { HIGH, MEDIUM, LOW }
+
+
+class MainActivity : ComponentActivity() {
+
+    /*
+     * Request SMS + Notification permissions
+     */
+    private val permissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+
+            val smsGranted =
+                permissions[Manifest.permission.RECEIVE_SMS]
+                    ?: (ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.RECEIVE_SMS
+                    ) == PackageManager.PERMISSION_GRANTED)
+
+            val notificationGranted =
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    permissions[Manifest.permission.POST_NOTIFICATIONS]
+                        ?: (ContextCompat.checkSelfPermission(
+                            this,
+                            Manifest.permission.POST_NOTIFICATIONS
+                        ) == PackageManager.PERMISSION_GRANTED)
+                } else {
+                    true
+                }
+
+            when {
+                smsGranted && notificationGranted -> {
+                    Toast.makeText(
+                        this,
+                        "Permissions granted",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+
+                !smsGranted -> {
+                    Toast.makeText(
+                        this,
+                        "SMS permission denied",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+
+                !notificationGranted -> {
+                    Toast.makeText(
+                        this,
+                        "Notification permission denied",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+
+            requestBackgroundLocationIfNeeded()
+        }
+
+    /*
+     * "Allow all the time" location, requested separately from (and only after)
+     * foreground location, since Android requires it as its own step and a
+     * combined request silently drops it on newer versions. Without this, a bank
+     * SMS detected while the app is in the background never gets a location —
+     * only expenses added manually from inside the app (always foreground) do.
+     */
+    private val backgroundLocationLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (!granted) {
+                Toast.makeText(
+                    this,
+                    "Background location denied — SMS-detected expenses won't have a location",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+
+    private fun requestBackgroundLocationIfNeeded() {
+        val hasForegroundLocation =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasForegroundLocation) {
+            return
+        }
+
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+            return
+        }
+
+        val hasBackgroundLocation =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasBackgroundLocation) {
+            backgroundLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        }
+    }
+
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        requestRequiredPermissions()
+
+        // Process-death safety: if the app was killed mid-payment (dialing,
+        // or waiting on a confirming SMS), any stale in-flight attempt gets
+        // reconciled to TIMEOUT here rather than sitting forever as
+        // IN_PROGRESS/WAITING_FOR_VERIFICATION with nothing left to resolve it.
+        lifecycleScope.launch {
+            PaymentSessionManager.reconcileOnStart(this@MainActivity)
+        }
+
+        setContent {
+            SplitWiseAutoTheme {
+                HomeScreen()
+            }
+        }
+    }
+
+
+    private fun requestRequiredPermissions() {
+
+        val permissionsToRequest = mutableListOf<String>()
+
+        /*
+         * SMS permission
+         */
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECEIVE_SMS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionsToRequest.add(
+                Manifest.permission.RECEIVE_SMS
+            )
+        }
+
+        /*
+         * Location permission
+         *
+         * Needed so a detected expense (manual or SMS-triggered) can be tagged
+         * with where it happened.
+         */
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            permissionsToRequest.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+
+        /*
+         * Notification permission
+         *
+         * Required only on Android 13+
+         */
+        if (
+            android.os.Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionsToRequest.add(
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+
+            permissionLauncher.launch(
+                permissionsToRequest.toTypedArray()
+            )
+        } else {
+            requestBackgroundLocationIfNeeded()
+        }
+    }
+}
+
+
+/*
+ * Existing manual SMS testing screen
+ *
+ * We are keeping this for now.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ExpenseTrackerScreen() {
+
+    var smsText by remember {
+        mutableStateOf("")
+    }
+
+    var transaction by remember {
+        mutableStateOf<Transaction?>(null)
+    }
+
+    MaterialTheme {
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp)
+        ) {
+
+            Text(
+                text = "Expense Tracker",
+                style = MaterialTheme.typography.headlineMedium
+            )
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            OutlinedTextField(
+                value = smsText,
+                onValueChange = {
+                    smsText = it
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp),
+                label = {
+                    Text("Paste bank SMS")
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            Button(
+                onClick = {
+                    transaction = parseBankSms(smsText)
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Parse Transaction")
+            }
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            transaction?.let {
+
+                Text(
+                    text = "Transaction",
+                    style = MaterialTheme.typography.titleLarge
+                )
+
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
+
+                TransactionCard(it)
+            }
+        }
+    }
+}
+
+
+/*
+ * Manual transaction result card
+ */
+@Composable
+fun TransactionCard(
+    transaction: Transaction
+) {
+
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+
+        Column(
+            modifier = Modifier.padding(20.dp)
+        ) {
+
+            Text(
+                text = "₹${transaction.amount}",
+                style = MaterialTheme.typography.headlineLarge
+            )
+
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            Text("Bank: ${transaction.bank}")
+            Text("Type: ${transaction.type}")
+            Text("Date: ${transaction.date}")
+            Text("Merchant: ${transaction.merchant}")
+            Text("Balance: ₹${transaction.balance}")
+            Text("UPI: ${transaction.upi}")
+        }
+    }
+}
+
+
+/*
+ * Generic Indian bank SMS parser.
+ *
+ * Handles debit/credit alerts across the major banks (SBI, HDFC, ICICI,
+ * Axis, Kotak, PNB, Bank of Baroda, Canara, Union Bank of India, IDBI,
+ * Yes Bank, IndusInd, IDFC FIRST, AU Small Finance, Standard Chartered,
+ * Citibank, American Express) plus common UPI/card phrasing variants.
+ * Anything that still doesn't match falls through to null so it's never
+ * silently turned into a wrong expense.
+ */
+fun parseBankSms(
+    sms: String,
+    sender: String? = null,
+    receivedAtMillis: Long = System.currentTimeMillis()
+): Transaction? {
+    val message = sms.replace(Regex("\\s+"), " ").trim()
+    if (message.isBlank()) return null
+
+    // OTPs, promotions, and pure balance/limit notices must never create expenses.
+    if (Regex(
+            "\\b(otp|one[- ]time password|offer|cashback\\s+offer|statement generated|" +
+                "login alert|will expire|is due|reminder|mini\\s+statement|available\\s+limit\\s+is)\\b",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(message)
+    ) return null
+
+    val debit = Regex(
+        "\\b(debited|debit(?:ed)?\\s+(?:by|with|for)|spent|paid|purchase(?:d)?\\s+(?:of|for)?|" +
+            "withdrawn|withdrawal\\s+of|payment\\s+of|txn\\s+of|charged(?:\\s+to)?|used\\s+(?:at|for)|" +
+            "sent|trf(?:\\s+to)?|has\\s+been\\s+debited)\\b",
+        RegexOption.IGNORE_CASE
+    ).containsMatchIn(message)
+    val credit = Regex(
+        "\\b(credited|credit(?:ed)?\\s+(?:with|to)|received|deposited|refund(?:ed)?(?:\\s+of)?|" +
+            "has\\s+been\\s+credited)\\b",
+        RegexOption.IGNORE_CASE
+    ).containsMatchIn(message)
+    if (!debit && !credit) return null
+
+    val amountText =
+        Regex("""(?:rs\.?|inr|₹)\s*:?\s*([\d,]+(?:\.\d{1,2})?)""", RegexOption.IGNORE_CASE)
+            .find(message)?.groupValues?.getOrNull(1)
+            ?: Regex("""\b([\d,]+(?:\.\d{1,2})?)\s*(?:rs\.?|inr|₹)\b""", RegexOption.IGNORE_CASE)
+                .find(message)?.groupValues?.getOrNull(1)
+    val parsedAmount = amountText?.replace(",", "")?.toDoubleOrNull() ?: return null
+    if (parsedAmount <= 0.0) return null
+
+    val accountIdentifier = extractAccountIdentifier(message)
+    val bank = detectBank(message, sender)
+    val reference = Regex(
+        """\b(?:upi\s*(?:ref(?:erence)?)?\s*(?:no\.?)?\s*[:\-]?|rrn\s*[:\-]?|ref\s*(?:no)?\s*[:\-]?|txn\s*(?:id|no)?\s*[:\-]?)\s*([a-z0-9\-]{6,})""",
+        RegexOption.IGNORE_CASE
+    ).find(message)?.groupValues?.getOrNull(1) ?: "Unknown"
+    val balance = Regex(
+        """\b(?:avl\.?\s*(?:bal(?:ance)?|lmt|limit)|available\s+(?:balance|limit)|bal(?:ance)?|clr\s+bal)\s*[:\-]?\s*(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)""",
+        RegexOption.IGNORE_CASE
+    ).find(message)?.groupValues?.getOrNull(1) ?: "Unknown"
+
+    val date = Regex(
+        """\b(\d{2}[-/]\d{2}[-/]\d{2,4}|\d{2}-[A-Za-z]{3}-\d{2,4}|\d{2}\s+[A-Za-z]{3}\s+\d{2,4})\b"""
+    ).find(message)?.groupValues?.getOrNull(1)
+        ?: SimpleDateFormat("dd-MMM-yy", Locale.US).format(Date(receivedAtMillis))
+
+    val merchant = extractMerchant(message)
+    val confidence = when {
+        debit && accountIdentifier != null -> ParseConfidence.HIGH
+        debit -> ParseConfidence.MEDIUM
+        else -> ParseConfidence.LOW
+    }
+
+    return Transaction(
+        bank = bank,
+        type = if (debit) "DEBIT" else "CREDIT",
+        amount = String.format(Locale.US, "%.2f", parsedAmount),
+        date = date,
+        merchant = merchant,
+        balance = balance,
+        upi = reference,
+        accountIdentifier = accountIdentifier,
+        confidence = confidence,
+        receivedAtMillis = receivedAtMillis
+    )
+}
+
+/** Extracts only a masked suffix; full account/card numbers are never retained. */
+fun extractAccountIdentifier(sms: String): String? {
+    val labelledEnding = Regex(
+        """(?:a/?c(?:count)?|acct|card)(?:\s+(?:no\.?|number))?\s+(?:ending(?:\s+(?:in|with))?\s+)?(?:no\.?\s*)?(?:x+|\*+)?\s*(\d{3,4})\b""",
+        RegexOption.IGNORE_CASE
+    ).find(sms)?.groupValues?.getOrNull(1)
+    val maskedEnding = labelledEnding ?: Regex("""\b(?:x{2,}|\*{2,})(\d{3,4})\b""", RegexOption.IGNORE_CASE)
+        .find(sms)?.groupValues?.getOrNull(1)
+    return maskedEnding?.let { "****${it.padStart(4, '0')}" }
+}
+
+/** Known bank SMS sender codes, used when the message body doesn't spell out the bank name. */
+private val KNOWN_BANK_SENDER_CODES = mapOf(
+    "SBIINB" to "SBI", "SBIPSG" to "SBI", "SBI" to "SBI",
+    "HDFCBK" to "HDFC Bank", "HDFCBN" to "HDFC Bank",
+    "ICICIB" to "ICICI Bank", "ICICIT" to "ICICI Bank",
+    "AXISBK" to "Axis Bank", "AXISB" to "Axis Bank",
+    "KOTAKB" to "Kotak Bank", "KOTAK" to "Kotak Bank",
+    "PNBSMS" to "PNB", "PUNBNK" to "PNB",
+    "BOBTXN" to "Bank of Baroda", "BOBIBK" to "Bank of Baroda",
+    "CANBNK" to "Canara Bank",
+    "UNIONB" to "Union Bank of India", "UBOI" to "Union Bank of India",
+    "IDBIBK" to "IDBI Bank", "IDBIBNK" to "IDBI Bank",
+    "YESBNK" to "Yes Bank",
+    "INDBNK" to "IndusInd Bank", "INDUSB" to "IndusInd Bank",
+    "IDFCFB" to "IDFC FIRST Bank",
+    "AUBANK" to "AU Small Finance Bank",
+    "SCBANK" to "Standard Chartered",
+    "CITIBK" to "Citibank",
+    "AMEXIN" to "American Express",
+    "RBLBNK" to "RBL Bank"
+)
+
+private fun detectBank(message: String, sender: String?): String {
+    val inMessage = Regex(
+        """\b(IDFC\s+FIRST\s+Bank|AU\s+Small\s+Finance\s+Bank|Standard\s+Chartered(?:\s+Bank)?|American\s+Express|Union\s+Bank\s+of\s+India|Bank\s+of\s+Baroda|Bank\s+of\s+India|Bank\s+of\s+Maharashtra|[A-Za-z]{2,}(?:\s+[A-Za-z]{2,})?\s+Bank)\b""",
+        RegexOption.IGNORE_CASE
+    ).find(message)?.groupValues?.getOrNull(1)
+    if (inMessage != null) {
+        return inMessage.replaceFirst(
+            Regex("""^(?:using|from|your|on|to|at|for|towards|via|with|by|the)\s+""", RegexOption.IGNORE_CASE),
+            ""
+        )
+    }
+    val normalizedSender = sender?.replace(Regex("[^A-Za-z0-9]"), "")?.uppercase(Locale.ROOT)
+    val knownBank = normalizedSender?.let { code ->
+        KNOWN_BANK_SENDER_CODES.entries.firstOrNull { code.contains(it.key) }?.value
+    }
+    return knownBank ?: normalizedSender?.takeIf { it.length >= 3 } ?: "Unknown Bank"
+}
+
+// Everyday brands people transact with constantly, checked FIRST — before any
+// regex attempt — so a merchant name buried inside dispute/fraud-helpline
+// boilerplate (e.g. "...dispute call 18001080/SMS BLOCK 1000 to
+// 9215676766...Blinkit...") is still recognized correctly instead of being
+// swallowed by that boilerplate text. Word-boundary matched, case-insensitive.
+private val KNOWN_MERCHANT_KEYWORDS = listOf(
+    "Swiggy", "Zomato", "Blinkit", "Zepto", "BigBasket", "Instamart",
+    "Amazon", "Flipkart", "Myntra", "Ajio", "Meesho", "Nykaa",
+    "Uber", "Ola", "Rapido", "IRCTC",
+    "Netflix", "Hotstar", "Spotify",
+    "Airtel", "Jio", "Vodafone", "BSNL",
+    "Dominos", "Domino's", "McDonald's", "McDonalds", "KFC", "Starbucks", "Pizza Hut",
+    "PVR", "INOX", "BookMyShow",
+    "Decathlon", "DMart", "D-Mart", "Croma", "Reliance"
+)
+
+private fun knownMerchantKeyword(message: String): String? =
+    KNOWN_MERCHANT_KEYWORDS.firstOrNull { keyword ->
+        Regex("""\b${Regex.escape(keyword)}\b""", RegexOption.IGNORE_CASE).containsMatchIn(message)
+    }
+
+private fun extractMerchant(message: String): String {
+    val balanceMerchant = Regex(
+        """(?:bal(?:ance)?\s*(?:rs\.?|inr|₹)\s*[\d,]+(?:\.\d{1,2})?\s+)(.+?)\s+credited\b""",
+        RegexOption.IGNORE_CASE
+    ).find(message)?.groupValues?.getOrNull(1)
+
+    // "at MERCHANT" — stop at a sentence-ending period (not a decimal point),
+    // a date ("on 07-09-26"), or a trailing keyword (upi/ref/txn/avl/bal/info)
+    // so we never swallow the rest of the SMS. Takes the LAST occurrence,
+    // since card/POS messages often say "...to your X Bank Card... at
+    // MERCHANT on DATE" — an earlier "at" can belong to unrelated text.
+    val stopLookahead =
+        """(?=\s*(?:\.(?!\d)|;|$|\bon\s+\d|\bupi\b|\bref\b|\btxn\b|\bavl\b|\bbal\b|\binfo\b|\bnot\s+you\b|\bnever\s+share\b))"""
+    val atMerchant = Regex(
+        """\bat\s+(.+?)$stopLookahead""",
+        RegexOption.IGNORE_CASE
+    ).findAll(message).toList().lastOrNull()?.groupValues?.getOrNull(1)
+
+    // UPI reference embedding the merchant — two delimiter styles seen in the
+    // wild: slash ("UPI/DR/123.../MERCHANT NAME/...", most banks) and hyphen
+    // ("UPI-662052745980-Blinkit.", e.g. ICICI). Tried before the generic
+    // "to X" fallback below because it's a structured, unambiguous field
+    // rather than free text that might match unrelated boilerplate.
+    val vpaMerchant = Regex("""\bvpa\s+([a-z0-9.\-_]+@[a-z0-9.\-]+)""", RegexOption.IGNORE_CASE)
+        .find(message)?.groupValues?.getOrNull(1)
+        ?: Regex("""\bupi/[a-z]{2,4}/\d+/([a-z0-9 .&'\-]{3,}?)/""", RegexOption.IGNORE_CASE)
+            .find(message)?.groupValues?.getOrNull(1)
+        ?: Regex("""\bupi-\d{4,}-([a-z0-9 .&'\-]{2,}?)(?=[.,]|\s|$)""", RegexOption.IGNORE_CASE)
+            .find(message)?.groupValues?.getOrNull(1)
+
+    // "to|towards MERCHANT" — last resort. Free text like this is the most
+    // likely to accidentally match a bank's fraud/dispute-helpline boilerplate
+    // ("To dispute call 18001080 ... to 9215676766") instead of the real
+    // transaction detail, so anything that looks like that footer (mentions
+    // "dispute"/"block"/"call", or is mostly a phone number) is rejected.
+    val toMerchant = Regex(
+        """\b(?:to|towards|via\s+upi\s+to)\s+(.+?)$stopLookahead""",
+        RegexOption.IGNORE_CASE
+    ).find(message)?.groupValues?.getOrNull(1)?.takeUnless {
+        Regex("""\b(dispute|block|call|helpline|customer\s+care)\b""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(it) ||
+            it.replace(Regex("[^0-9]"), "").length >= 6
+    }
+
+    val candidate = knownMerchantKeyword(message) ?: balanceMerchant ?: atMerchant ?: vpaMerchant ?: toMerchant
+    return candidate
+        ?.trim()
+        ?.trim('/', '-')
+        ?.takeUnless {
+            it.startsWith("upi", ignoreCase = true) ||
+                it.matches(Regex("[0-9-]+")) ||
+                it.isBlank()
+        }
+        ?: "Unknown"
+}

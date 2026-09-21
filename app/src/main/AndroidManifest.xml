@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!--
+      Needed so a location can still be attached to an expense detected from an
+      incoming SMS, which is handled by a BroadcastReceiver running in the
+      background (the app usually isn't in the foreground when a bank SMS
+      arrives). Without this, Android silently withholds location from any
+      background component even if foreground location is granted.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!--
+      CALL_PHONE places the call for "Scan & Pay" via ACTION_CALL — the app
+      dials the *99# USSD code (or the relevant IVR number) and then hands
+      the live call straight to the user's own dialer/USSD/IVR session. The
+      app never sees, reads, or injects anything into that session — no UPI
+      PIN ever passes through this app. This is an honest handoff, not
+      automation. If this permission is denied, the flow falls back to
+      ACTION_DIAL, which needs no permission and just pre-fills the dialer
+      for the user to tap Call themselves.
+    -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <!--
+      READ_PHONE_STATE is outside the feature's originally-agreed permission
+      list (CALL_PHONE, RECEIVE_SMS, CAMERA, SYSTEM_ALERT_WINDOW — the last
+      of which this feature no longer uses at all, see below) — flagging
+      that explicitly here. It is used for two honest-handoff support
+      features only:
+        1. Watching call-state transitions (offhook -> idle) to measure how
+           long the handed-off call lasted, so a call that ends in under
+           ~5 seconds is treated as user-cancelled instead of left pending
+           forever waiting on a confirming SMS that will never arrive.
+        2. Reading the active SIM's carrier name to auto-select the Jio
+           123Pay IVR rail vs. the generic *99# USSD rail.
+      Without this permission both fall back safely: rail selection defaults
+      to the generic *99# USSD rail, and a payment attempt can still only
+      ever resolve via the SMS-confirmation path or the verification-window
+      timeout — the <5s-call-is-cancelled shortcut simply never fires.
+      Neither the honest-handoff guarantee nor the SMS-only SUCCESS rule
+      depends on this permission being granted.
+    -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!--
+      SYSTEM_ALERT_WINDOW was used for Scan & Pay's "payment in progress"
+      status card, drawn as a floating overlay on top of the native *99#
+      USSD popup. Removed after real-device testing: on several OEM Android
+      skins (confirmed on MIUI), having ANY draw-over-other-apps overlay on
+      screen makes the OS refuse to show the soft keyboard for the *99#
+      "Enter UPI ID" system dialog, as a deliberate anti-tapjacking/PIN-
+      capture protection — this fired regardless of the overlay's own focus
+      flags, purely because it was present at all. The status card is now a
+      plain ongoing notification (PaymentOverlayService) instead, which
+      carries the same information without ever drawing on top of the
+      dialer/USSD screen, so it can't trigger that protection. Nothing in
+      this app requests SYSTEM_ALERT_WINDOW anymore.
+    -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <application
+
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SplitWiseAuto"
+        tools:targetApi="31">
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.SplitWiseAuto">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".ExpenseConfirmationActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ManualExpenseActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ExpenseDetailActivity"
+            android:exported="false" />
+        <activity
+            android:name=".QrScanActivity"
+            android:exported="false" />
+        <service
+            android:name=".PaymentOverlayService"
+            android:exported="false" />
+        <receiver
+            android:name=".SmsReceiver"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+
+        </receiver>
+    </application>
+
+</manifest>

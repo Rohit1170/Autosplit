@@ -1,0 +1,32 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Debug backups created during Claude-assisted edits this session —
+# not part of the app itself.
+*.bak
+*.bak_before_*
+*.fix
+*.fix2
+*.fix3
+*.fix4
+*.fix5
+*.edited
+*.inapp
+/Claude outputs/
+
+# JVM crash/replay logs that can land in the project root.
+hs_err_pid*.log
+replay_pid*.log
