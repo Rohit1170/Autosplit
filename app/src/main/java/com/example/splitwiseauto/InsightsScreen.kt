@@ -28,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material3.IconButton
@@ -67,6 +68,22 @@ fun InsightsScreen(
     val availableMonths by viewModel.availableMonths.collectAsState()
     val trend by viewModel.spendTrend.collectAsState()
     val categoryBreakdown by viewModel.categoryBreakdown.collectAsState()
+    val hasAnyExpenses by viewModel.hasAnyExpenses.collectAsState()
+
+    // Fresh install / no data: never touch the trend chart or breakdown.
+    when (hasAnyExpenses) {
+        null -> { LoadingStateView(modifier); return }
+        false -> {
+            EmptyStateView(
+                icon = Icons.Filled.Insights,
+                title = "No insights yet",
+                message = "Add your first expense and your spending trends and categories will show up here.",
+                modifier = modifier
+            )
+            return
+        }
+        true -> Unit
+    }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -501,4 +518,4 @@ private fun CategoryBreakdownRow(summary: CategorySummary) {
 }
 
 private fun formatRupees(amount: Double): String =
-    "₹" + String.format(Locale.US, "%,.0f", amount)
+    formatRupeeIndian(kotlin.math.round(amount))

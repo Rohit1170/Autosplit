@@ -92,6 +92,10 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
     private val _categoryBreakdown = MutableStateFlow<List<CategorySummary>>(emptyList())
     val categoryBreakdown: StateFlow<List<CategorySummary>> = _categoryBreakdown
 
+    /** null = still loading; false = no expenses at all yet (fresh install). */
+    private val _hasAnyExpenses = MutableStateFlow<Boolean?>(null)
+    val hasAnyExpenses: StateFlow<Boolean?> = _hasAnyExpenses
+
     // null (Main mode) behaves exactly as before — every expense, with an
     // extra synthetic row per trip in the breakdown below. Passing a tripId
     // (Trip mode) narrows everything to that trip only, same sections as today.
@@ -124,6 +128,7 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
 
             recomputeSpendTrend()
             recomputeCategoryBreakdown()
+            _hasAnyExpenses.value = allExpenses.isNotEmpty()
         }
     }
 

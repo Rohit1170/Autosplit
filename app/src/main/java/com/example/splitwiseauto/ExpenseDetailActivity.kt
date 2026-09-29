@@ -256,7 +256,7 @@ private fun ExpenseSummaryCard(expense: Expense) {
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "₹${String.format(Locale.US, "%.2f", expense.amount)}",
+                text = formatRupeeIndian(expense.amount),
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -466,7 +466,7 @@ private fun ExpenseParticipantsCard(expense: Expense, participants: List<Expense
 
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                text = "₹${String.format(Locale.US, "%.2f", participant.shareAmount)}",
+                                text = formatRupeeIndian(participant.shareAmount),
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -479,7 +479,7 @@ private fun ExpenseParticipantsCard(expense: Expense, participants: List<Expense
                                         // own share sheet with a prefilled message — the
                                         // person still has to pick an app and hit send.
                                         val message = "Hey ${participant.personName}, just a reminder — " +
-                                            "you owe ₹${String.format(Locale.US, "%.2f", participant.shareAmount)} " +
+                                            "you owe ${formatRupeeIndian(participant.shareAmount)} " +
                                             "for ${expense.merchant} (${expense.date})."
                                         val sendIntent = Intent(Intent.ACTION_SEND).apply {
                                             type = "text/plain"
@@ -491,7 +491,7 @@ private fun ExpenseParticipantsCard(expense: Expense, participants: List<Expense
                                     modifier = Modifier.height(28.dp)
                                 ) {
                                     Text(
-                                        text = "Remind · ₹${participant.shareAmount.toBigDecimal().stripTrailingZeros().toPlainString()}",
+                                        text = "Remind · ${formatRupeeIndian(participant.shareAmount)}",
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                 }

@@ -87,7 +87,7 @@ fun showExpenseNotification(
     )
         .setSmallIcon(android.R.drawable.ic_dialog_info)
         .setContentTitle(
-            "💸 ₹${transaction.amount} spent"
+            "💸 ${formatRupeeIndian(transaction.amount)} spent"
         )
         .setContentText(
             "${transaction.merchant} • Tap to split"
@@ -95,7 +95,7 @@ fun showExpenseNotification(
         .setStyle(
             NotificationCompat.BigTextStyle()
                 .bigText(
-                    "₹${transaction.amount} spent at ${transaction.merchant}\n" +
+                    "${formatRupeeIndian(transaction.amount)} spent at ${transaction.merchant}\n" +
                             "Who was this for? Tap to select people."
                 )
         )

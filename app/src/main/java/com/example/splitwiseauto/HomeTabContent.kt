@@ -25,6 +25,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -40,6 +42,10 @@ import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.text.BasicTextField
@@ -91,6 +97,7 @@ fun HomeScreen(
     val categories by homeViewModel.categorySummaries.collectAsState()
     val accountSpending by homeViewModel.accountSpending.collectAsState()
     val mapExpenses by mapViewModel.expensesWithLocation.collectAsState()
+    val mapLoaded by mapViewModel.loaded.collectAsState()
     val pendingNotifications by pendingNotificationsViewModel.pending.collectAsState()
     val recentPayments by pendingNotificationsViewModel.payments.collectAsState()
     val settlementHistory by friendViewModel.settlementHistory.collectAsState()
@@ -246,9 +253,9 @@ fun HomeScreen(
                     Text(
                         if (amount > 0.01) {
                             if (balance.netAmount > 0) {
-                                "${friend.name} owes you ₹${"%.2f".format(amount)}."
+                                "${friend.name} owes you ${formatRupeeIndian(amount)}."
                             } else {
-                                "You owe ${friend.name} ₹${"%.2f".format(amount)}."
+                                "You owe ${friend.name} ${formatRupeeIndian(amount)}."
                             }
                         } else {
                             "There is no pending balance with ${friend.name}."
@@ -758,6 +765,7 @@ fun HomeScreen(
                         ExpenseMapScreen(
                             expenses = mapExpenses,
                             active = pagerState.currentPage == 2,
+                            loaded = mapLoaded,
                             modifier = tabPageModifier
                         )
                     }
@@ -813,12 +821,17 @@ private fun HomeTabContent(
     var searchOpen by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val searchFocus = remember { FocusRequester() }
-    val searchedExpenses = remember(expenses, searchQuery) {
+    var sort by rememberSaveable { mutableStateOf(AmountSort.NEWEST) }
+    val searchedExpenses = remember(expenses, searchQuery, sort) {
         val q = searchQuery.trim()
         val matched = if (q.isEmpty()) expenses else expenses.filter { it.matchesSearch(q) }
-        // Stable sort: expenses with no timestamp keep their original
-        // newest-added-first order and sink below the dated ones.
-        matched.sortedByDescending { it.expense.timestampMillis ?: Long.MIN_VALUE }
+        when (sort) {
+            // Stable sort: expenses with no timestamp keep their original
+            // newest-added-first order and sink below the dated ones.
+            AmountSort.NEWEST -> matched.sortedByDescending { it.expense.timestampMillis ?: Long.MIN_VALUE }
+            AmountSort.HIGH_TO_LOW -> matched.sortedByDescending { it.expense.amount }
+            AmountSort.LOW_TO_HIGH -> matched.sortedBy { it.expense.amount }
+        }
     }
     val monthTotals = remember(searchedExpenses) {
         searchedExpenses
@@ -828,9 +841,13 @@ private fun HomeTabContent(
     // Back to the first page whenever the search text changes. Not keyed on
     // the list itself, so deleting a row or resuming the app doesn't
     // collapse what you'd already expanded.
-    var visibleCount by remember(searchQuery) { mutableStateOf(RECENT_PAGE_SIZE) }
-    val visibleEntries = remember(searchedExpenses, visibleCount, monthTotals) {
-        buildRecentEntries(searchedExpenses.take(visibleCount), monthTotals)
+    var visibleCount by remember(searchQuery, sort) { mutableStateOf(RECENT_PAGE_SIZE) }
+    val visibleEntries = remember(searchedExpenses, visibleCount, monthTotals, sort) {
+        buildRecentEntries(
+            searchedExpenses.take(visibleCount),
+            monthTotals,
+            showMonthBars = sort == AmountSort.NEWEST
+        )
     }
 
     // Entrance rise/fade animation removed. Profiling a real slow frame
@@ -986,6 +1003,27 @@ private fun HomeTabContent(
                                 imageVector = Icons.Filled.Search,
                                 contentDescription = "Search expenses",
                                 tint = if (searchOpen || searchQuery.isNotBlank()) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                        // Sort: one icon, tap to cycle. Grey ⇅ = newest
+                        // first; ↓ = amount high→low; ↑ = amount low→high.
+                        IconButton(onClick = { sort = sort.next() }) {
+                            Icon(
+                                imageVector = when (sort) {
+                                    AmountSort.NEWEST -> Icons.Filled.SwapVert
+                                    AmountSort.HIGH_TO_LOW -> Icons.Filled.ArrowDownward
+                                    AmountSort.LOW_TO_HIGH -> Icons.Filled.ArrowUpward
+                                },
+                                contentDescription = when (sort) {
+                                    AmountSort.NEWEST -> "Sort: newest first"
+                                    AmountSort.HIGH_TO_LOW -> "Sort: amount high to low"
+                                    AmountSort.LOW_TO_HIGH -> "Sort: amount low to high"
+                                },
+                                tint = if (sort != AmountSort.NEWEST) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
@@ -1294,6 +1332,13 @@ fun formatRupeeIndian(amount: Double): String {
     }
 }
 
+/**
+ * Same as [formatRupeeIndian] for amounts stored as text (parsed SMS keeps
+ * "50000.00"). Falls back to the raw text if it isn't a number.
+ */
+fun formatRupeeIndian(amount: String): String =
+    amount.replace(",", "").trim().toDoubleOrNull()?.let { formatRupeeIndian(it) } ?: "₹$amount"
+
 @Composable
 private fun HomeHeroCard(
     label: String,
@@ -1477,8 +1522,10 @@ private fun recentMonthKeyOf(item: ExpenseWithParticipants): MonthKey? =
  */
 private fun buildRecentEntries(
     visible: List<ExpenseWithParticipants>,
-    monthTotals: Map<MonthKey?, Double>
+    monthTotals: Map<MonthKey?, Double>,
+    showMonthBars: Boolean = true
 ): List<RecentEntry> {
+    if (!showMonthBars) return visible.map { RecentEntry.Item(it) }
     val entries = ArrayList<RecentEntry>(visible.size + 4)
     var isFirst = true
     var currentMonth: MonthKey? = null
@@ -1715,7 +1762,7 @@ private fun CategoryCard(
             )
 
             Text(
-                text = "₹${"%.0f".format(summary.total)}",
+                text = formatRupeeIndian(summary.total),
                 style = MaterialTheme.typography.titleMedium
             )
 
@@ -1817,7 +1864,7 @@ fun ExpenseCard(
             ) {
 
                 Text(
-                    text = "₹${"%.2f".format(item.expense.amount)}",
+                    text = formatRupeeIndian(item.expense.amount),
                     style = MaterialTheme.typography.titleSmall
                 )
 
@@ -1863,9 +1910,9 @@ private fun SettlementHistoryDialog(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = if (settlement.amount >= 0) {
-                                        "Received ₹${"%.2f".format(settlement.amount)}"
+                                        "Received ${formatRupeeIndian(settlement.amount)}"
                                     } else {
-                                        "Paid ₹${"%.2f".format(abs(settlement.amount))}"
+                                        "Paid ${formatRupeeIndian(abs(settlement.amount))}"
                                     },
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
@@ -1987,193 +2034,383 @@ private fun FilterDialog(
     val customRangeValid = customStart != null && customEnd != null && customStart!! <= customEnd!!
     val canApply = selectedType != DateFilterType.CUSTOM || customRangeValid
 
-    AlertDialog(
+    val applyNow = {
+        if (selectedType == DateFilterType.CUSTOM && customRangeValid && customName.isNotBlank()) {
+            onSaveCustomFilter(customName.trim(), customStart!!, customEnd!!)
+        }
+        onApply(
+            DateFilter(
+                type = selectedType,
+                startMillis = if (selectedType == DateFilterType.CUSTOM) customStart else null,
+                endMillis = if (selectedType == DateFilterType.CUSTOM) customEnd else null,
+                label = if (selectedType == DateFilterType.CUSTOM) customName.trim().ifBlank { null } else null
+            ),
+            if (selectedParticipant == ParticipantFilter.WITH_ME) ParticipantFilter.ANY_FRIEND else selectedParticipant,
+            if (selectedParticipant == ParticipantFilter.ANY_FRIEND) selectedFriends else emptySet()
+        )
+        onDismiss()
+    }
+
+    // Full-width bottom sheet (a Dialog anchored to the bottom) instead of a
+    // narrow AlertDialog: the old one squeezed 4 equal pills into ~280dp and
+    // truncated every label ("7 da…", "Ever…").
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text("Filter expenses") },
-        text = {
-            Column(
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                ),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
+                    // Swallow taps so touching the sheet doesn't dismiss it.
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    ),
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 3.dp
             ) {
-                Text(
-                    text = "Date range",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                listOf(
-                    DateFilterType.ALL to "All time",
-                    DateFilterType.LAST_WEEK to "Last week",
-                    DateFilterType.LAST_MONTH to "Last month",
-                    DateFilterType.CUSTOM to "Custom"
-                ).forEach { (type, label) ->
-                    Row(
+                Column(
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .heightIn(max = 640.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 10.dp, bottom = 16.dp)
+                ) {
+                    // Grab handle
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { selectedType = type },
+                            .align(Alignment.CenterHorizontally)
+                            .size(width = 36.dp, height = 4.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(50))
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RadioButton(selected = selectedType == type, onClick = { selectedType = type })
-                        Text(label)
-                    }
-                }
-
-                if (selectedType == DateFilterType.CUSTOM) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = {
-                            pickDate(customStart, { customStart = it }, endOfDay = false)
-                        }) {
-                            Text(customStart?.let { dateFormat.format(Date(it)) } ?: "Start date")
-                        }
-                        Text("–")
-                        TextButton(onClick = {
-                            pickDate(customEnd, { customEnd = it }, endOfDay = true)
-                        }) {
-                            Text(customEnd?.let { dateFormat.format(Date(it)) } ?: "End date")
-                        }
-                    }
-                    if (customStart != null && customEnd != null && !customRangeValid) {
                         Text(
-                            text = "Start date must be before end date.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
+                            text = "Filter",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
                         )
+                        TextButton(onClick = {
+                            selectedType = DateFilterType.ALL
+                            customStart = null
+                            customEnd = null
+                            customName = ""
+                            selectedParticipant = ParticipantFilter.ALL
+                            selectedFriends = emptySet()
+                        }) { Text("Reset") }
                     }
 
-                    if (savedFilters.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "Saved filters",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        savedFilters.forEach { saved ->
+                    Spacer(modifier = Modifier.height(12.dp))
+                    FilterSectionLabel("When")
+                    SegmentedControl(
+                        options = listOf(
+                            DateFilterType.ALL to "All",
+                            DateFilterType.LAST_WEEK to "7 days",
+                            DateFilterType.LAST_MONTH to "30 days",
+                            DateFilterType.CUSTOM to "Custom"
+                        ),
+                        selected = selectedType,
+                        onSelect = { selectedType = it }
+                    )
+
+                    if (selectedType == DateFilterType.CUSTOM) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            DateField(
+                                label = "From",
+                                value = customStart?.let { dateFormat.format(Date(it)) },
+                                modifier = Modifier.weight(1f),
+                                onClick = { pickDate(customStart, { customStart = it }, endOfDay = false) }
+                            )
+                            DateField(
+                                label = "To",
+                                value = customEnd?.let { dateFormat.format(Date(it)) },
+                                modifier = Modifier.weight(1f),
+                                onClick = { pickDate(customEnd, { customEnd = it }, endOfDay = true) }
+                            )
+                        }
+                        if (customStart != null && customEnd != null && !customRangeValid) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Start date must be before end date.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        if (savedFilters.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(12.dp))
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                TextButton(onClick = {
-                                    customStart = saved.startMillis
-                                    customEnd = saved.endMillis
-                                    customName = saved.name
-                                }) { Text(saved.name) }
-                                IconButton(onClick = { onDeleteSavedFilter(saved) }) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Close,
-                                        contentDescription = "Delete saved filter ${saved.name}",
-                                        modifier = Modifier.size(18.dp)
+                                savedFilters.forEach { saved ->
+                                    FilterPill(
+                                        label = saved.name,
+                                        selected = customStart == saved.startMillis && customEnd == saved.endMillis,
+                                        onClick = {
+                                            customStart = saved.startMillis
+                                            customEnd = saved.endMillis
+                                            customName = saved.name
+                                        },
+                                        onRemove = { onDeleteSavedFilter(saved) }
                                     )
                                 }
                             }
                         }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = customName,
+                            onValueChange = { customName = it },
+                            placeholder = { Text("Save as… (optional)") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = customName,
-                        onValueChange = { customName = it },
-                        label = { Text("Name this range (to save it)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "Split with",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                listOf(
-                    ParticipantFilter.ALL to "Everyone",
-                    ParticipantFilter.WITH_ME to "With me",
-                    ParticipantFilter.WITHOUT_ME to "Without me",
-                    ParticipantFilter.ONLY_ME to "Only me",
-                    ParticipantFilter.ANY_FRIEND to "Any friend"
-                ).forEach { (type, label) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { selectedParticipant = type },
-                        verticalAlignment = Alignment.CenterVertically
+                    Spacer(modifier = Modifier.height(22.dp))
+                    FilterSectionLabel("Who")
+                    val effectiveParticipant =
+                        if (selectedParticipant == ParticipantFilter.WITH_ME) ParticipantFilter.ANY_FRIEND else selectedParticipant
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                     ) {
-                        RadioButton(selected = selectedParticipant == type, onClick = { selectedParticipant = type })
-                        Text(label)
-                    }
-                }
-
-                if (selectedParticipant == ParticipantFilter.ANY_FRIEND && friends.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Leave all unchecked for any friend, or pick one or more",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    friends.forEach { friend ->
-                        val checked = selectedFriends.any { it.equals(friend.name, ignoreCase = true) }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    selectedFriends = if (checked) {
-                                        selectedFriends.filterNot { it.equals(friend.name, ignoreCase = true) }.toSet()
-                                    } else {
-                                        selectedFriends + friend.name
-                                    }
-                                },
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = checked,
-                                onCheckedChange = { isChecked ->
-                                    selectedFriends = if (isChecked) {
-                                        selectedFriends + friend.name
-                                    } else {
-                                        selectedFriends.filterNot { it.equals(friend.name, ignoreCase = true) }.toSet()
-                                    }
+                        Column {
+                            listOf(
+                                Triple(ParticipantFilter.ALL, "Everyone", "All expenses"),
+                                Triple(ParticipantFilter.ONLY_ME, "Just me", "Only my own spending"),
+                                Triple(ParticipantFilter.ANY_FRIEND, "Shared", "Split with friends"),
+                                Triple(ParticipantFilter.WITHOUT_ME, "For others", "I paid, but it wasn't for me")
+                            ).forEachIndexed { index, (value, title, subtitle) ->
+                                if (index > 0) {
+                                    Divider(
+                                        modifier = Modifier.padding(start = 16.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    )
                                 }
-                            )
-                            Text(friend.name)
+                                ChoiceRow(
+                                    title = title,
+                                    subtitle = subtitle,
+                                    selected = effectiveParticipant == value,
+                                    onClick = { selectedParticipant = value }
+                                )
+                            }
                         }
                     }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = canApply,
-                onClick = {
-                    if (selectedType == DateFilterType.CUSTOM && customRangeValid && customName.isNotBlank()) {
-                        onSaveCustomFilter(customName.trim(), customStart!!, customEnd!!)
+
+                    if (effectiveParticipant == ParticipantFilter.ANY_FRIEND && friends.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = if (selectedFriends.isEmpty()) "Any friend · tap to narrow down" else "Only with",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            friends.forEach { friend ->
+                                val checked = selectedFriends.any { it.equals(friend.name, ignoreCase = true) }
+                                FilterPill(
+                                    label = friend.name,
+                                    selected = checked,
+                                    onClick = {
+                                        selectedFriends = if (checked) {
+                                            selectedFriends.filterNot { it.equals(friend.name, ignoreCase = true) }.toSet()
+                                        } else {
+                                            selectedFriends + friend.name
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
-                    onApply(
-                        DateFilter(
-                            type = selectedType,
-                            startMillis = if (selectedType == DateFilterType.CUSTOM) customStart else null,
-                            endMillis = if (selectedType == DateFilterType.CUSTOM) customEnd else null,
-                            label = if (selectedType == DateFilterType.CUSTOM) customName.trim().ifBlank { null } else null
-                        ),
-                        selectedParticipant,
-                        if (selectedParticipant == ParticipantFilter.ANY_FRIEND) selectedFriends else emptySet()
-                    )
-                    onDismiss()
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(
+                        onClick = applyNow,
+                        enabled = canApply,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Apply", style = MaterialTheme.typography.titleMedium)
+                    }
                 }
-            ) { Text("Apply") }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = {
-                    onApply(DateFilter(), ParticipantFilter.ALL, emptySet())
-                    onDismiss()
-                }) { Text("Clear") }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
             }
         }
+    }
+}
+
+@Composable
+private fun FilterSectionLabel(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
     )
+    Spacer(modifier = Modifier.height(8.dp))
+}
+
+/** One connected track with a sliding-looking selected segment. */
+@Composable
+private fun <T> SegmentedControl(
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(modifier = Modifier.padding(4.dp)) {
+            options.forEach { (value, label) ->
+                val isSelected = value == selected
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(40.dp)
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            RoundedCornerShape(10.dp)
+                        )
+                        .clickable { onSelect(value) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isSelected) androidx.compose.ui.text.font.FontWeight.SemiBold else null,
+                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChoiceRow(title: String, subtitle: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (selected) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = "Selected",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun DateField(label: String, value: String?, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = Color.Transparent,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value ?: "Pick date",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (value != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** Content-sized pill (friends, saved ranges) — never squeezed or truncated. */
+@Composable
+private fun FilterPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onRemove: (() -> Unit)? = null
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.height(36.dp),
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (selected && onRemove == null) {
+                Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+            }
+            Text(text = label, style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
+            if (onRemove != null) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Delete $label",
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clickable(onClick = onRemove)
+                )
+            }
+        }
+    }
 }

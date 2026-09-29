@@ -1,0 +1,7 @@
+steps:
+  - script: scripts/prepare-demo.mjs
+  - launch: com.example.splitwiseauto
+  - await: { visible: { text: { matches: '^Insights$' } }, timeout: 15000 }
+  - tap: { text: { matches: '^Insights$' } }
+  - await: { visible: { text: Spent so far }, timeout: 10000 }
+  - await: { idle: true, stableFor: 800 }

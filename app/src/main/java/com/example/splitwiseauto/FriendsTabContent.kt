@@ -472,7 +472,7 @@ private fun balanceLabel(balance: FriendBalance): String {
 }
 
 private fun formatAmount(amount: Double): String {
-    return String.format(Locale.US, "₹%.2f", amount)
+    return formatRupeeIndian(amount)
 }
 
 /**

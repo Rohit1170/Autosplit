@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Exported CSV files live in cache/exports and are shared read-only
+         via FileProvider. Nothing sensitive is exposed beyond the export. -->
+    <cache-path name="exports" path="exports/" />
+</paths>

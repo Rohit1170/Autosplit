@@ -178,6 +178,8 @@ class QrScanActivity : ComponentActivity() {
 
         private const val STATE_IN_FLIGHT_ID = "inFlightPaymentId"
         private const val STATE_UPI_APP_NAME = "upiAppName"
+        private const val STATE_VIA_USSD = "paidViaUssd"
+        private const val STATE_COPIED_VPA = "ussdCopiedVpa"
         private const val ACTION_UPI_APP_CHOSEN = "com.example.splitwiseauto.UPI_APP_CHOSEN"
     }
 
@@ -186,6 +188,22 @@ class QrScanActivity : ComponentActivity() {
 
     /** Label of the UPI app picked in the chooser (e.g. "GPay"), for "Paid via …". */
     private var upiAppName by mutableStateOf<String?>(null)
+
+    /** True when the in-flight payment runs over *99# (USSD) instead of a UPI app. */
+    private var paidViaUssd by mutableStateOf(false)
+
+    /** Whether this flow put a payee VPA on the clipboard (wiped when the screen closes). */
+    private var ussdCopiedVpa = false
+
+    /**
+     * CALL_PHONE lets us open the USSD session directly (Flowpay's ACTION_CALL
+     * path). If the user declines, we still pre-fill the dialer so they can tap
+     * Call themselves — the payment is never blocked on this permission.
+     */
+    private val callPhonePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            dialUssdNow()
+        }
 
     private var cameraGranted by mutableStateOf(false)
     private var cameraDenied by mutableStateOf(false)
@@ -227,6 +245,8 @@ class QrScanActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         inFlightPaymentId = savedInstanceState?.getString(STATE_IN_FLIGHT_ID)
         upiAppName = savedInstanceState?.getString(STATE_UPI_APP_NAME)
+        paidViaUssd = savedInstanceState?.getBoolean(STATE_VIA_USSD) ?: false
+        ussdCopiedVpa = savedInstanceState?.getBoolean(STATE_COPIED_VPA) ?: false
 
         ContextCompat.registerReceiver(
             this,
@@ -256,6 +276,8 @@ class QrScanActivity : ComponentActivity() {
                     billNote = billNote,
                     paymentId = inFlightPaymentId,
                     upiAppName = upiAppName,
+                    paidViaUssd = paidViaUssd,
+                    ussdBlockedReason = UssdPayHelper.blockedReason(this),
                     onRequestCamera = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
                     onOpenSettings = { openAppSettings() },
                     onPay = { request, amountMinor, remarks, onError ->
@@ -266,6 +288,8 @@ class QrScanActivity : ComponentActivity() {
                     },
                     onCheckSmsAgain = { id, onDone -> checkSmsAgain(id, onDone) },
                     onMarkPaid = { id -> markPaidManually(id) },
+                    onUssdRedial = { id -> redialUssd(id) },
+                    onUssdCancel = { id -> cancelUssdPayment(id) },
                     onClose = { finish() }
                 )
             }
@@ -285,11 +309,18 @@ class QrScanActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
         inFlightPaymentId?.let { outState.putString(STATE_IN_FLIGHT_ID, it) }
         upiAppName?.let { outState.putString(STATE_UPI_APP_NAME, it) }
+        outState.putBoolean(STATE_VIA_USSD, paidViaUssd)
+        outState.putBoolean(STATE_COPIED_VPA, ussdCopiedVpa)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         runCatching { unregisterReceiver(chosenAppReceiver) }
+        // The payee VPA is PII: don't leave it on the clipboard once the flow is over.
+        if (isFinishing && ussdCopiedVpa) {
+            UssdPayHelper.clearVpa(this)
+            ussdCopiedVpa = false
+        }
     }
 
     private fun hasCameraPermission() =
@@ -343,6 +374,7 @@ class QrScanActivity : ComponentActivity() {
                 )
             }
             upiAppName = null
+            paidViaUssd = false
             inFlightPaymentId = paymentRef
 
             val chosenCallback = PendingIntent.getBroadcast(
@@ -376,15 +408,19 @@ class QrScanActivity : ComponentActivity() {
     }
 
     /**
-     * Second, offline payment mode: dials a *99# USSD session instead of
-     * handing off to a UPI app. Same PendingPayment row shape as
-     * [launchUpiPayment], so everything downstream — bank SMS matching
-     * (PendingPaymentMatcher), the status screen, and expense creation
-     * (ScanPayLedger) — is exactly the same pipeline already used for UPI-app
-     * payments. There's no app-returned result to read here (USSD gives no
-     * callback this app can trust), so the payment simply stays PENDING
-     * until the bank's own debit SMS confirms it — "the same logic" as the
-     * UPI path from that point on.
+     * Second, offline payment mode — *99# USSD, ported from Flowpay's
+     * scan-to-pay rail (see [UssdPayHelper] for why it works this way).
+     *
+     * Order matters, same as Flowpay:
+     *  1. PendingPayment row first, so the attempt survives a process death
+     *     while the USSD dialog is open.
+     *  2. Copy the payee VPA to the clipboard (the user pastes it at the
+     *     first USSD prompt).
+     *  3. Place the *99*1*3# call. The status screen underneath shows the
+     *     step-by-step guide while the system USSD dialog is on top.
+     *  4. No USSD result is trusted: the row stays PENDING until the bank's
+     *     debit SMS confirms it (PendingPaymentMatcher) or the 30-minute
+     *     timeout worker resolves it — the same pipeline as UPI-app payments.
      */
     private fun launchUssdPayment(
         request: UpiPaymentRequest,
@@ -393,10 +429,14 @@ class QrScanActivity : ComponentActivity() {
         billId: String?,
         onError: (String) -> Unit
     ) {
+        UssdPayHelper.blockedReason(this)?.let { onError(it); return }
+        val effectiveAmountMinor = UpiIntentPayments.effectiveAmountMinor(request, amountMinor)
+        if (effectiveAmountMinor > UssdPayHelper.MAX_AMOUNT_MINOR) {
+            onError("*99# payments are limited to ₹5,000 per transaction. Use a UPI app for larger amounts.")
+            return
+        }
         lifecycleScope.launch {
             val paymentRef = UpiIntentPayments.newPaymentRef()
-            val effectiveAmountMinor = UpiIntentPayments.effectiveAmountMinor(request, amountMinor)
-
             val dao = AppDatabase.getDatabase(this@QrScanActivity).pendingPaymentDao()
             withContext(Dispatchers.IO) {
                 dao.insert(
@@ -411,18 +451,71 @@ class QrScanActivity : ComponentActivity() {
                     )
                 )
             }
-            upiAppName = null
+            if (UssdPayHelper.copyVpa(this@QrScanActivity, request.vpa)) ussdCopiedVpa = true
+            upiAppName = "*99#"
+            paidViaUssd = true
             inFlightPaymentId = paymentRef
 
-            try {
-                val ussdCode = UssdPayHelper.buildUssdCode(request.vpa, effectiveAmountMinor / 100.0)
-                UssdPayHelper.triggerPayment(this@QrScanActivity, ussdCode)
-            } catch (e: Exception) {
-                withContext(Dispatchers.IO) {
-                    dao.updateStatus(paymentRef, PendingPaymentStatus.FAILED.name)
+            // Ask for CALL_PHONE once; the launcher dials either way.
+            if (UssdPayHelper.hasCallPermission(this@QrScanActivity)) {
+                if (!dialUssdNow()) {
+                    withContext(Dispatchers.IO) {
+                        dao.updateStatus(paymentRef, PendingPaymentStatus.FAILED.name)
+                    }
+                    inFlightPaymentId = null
+                    paidViaUssd = false
+                    onError("Couldn't open *99#. Dial ${UssdPayHelper.SCAN_TO_PAY_CODE} from your phone app.")
                 }
-                inFlightPaymentId = null
-                onError("Couldn't start the *99# session. You can dial it manually from your phone app.")
+            } else {
+                callPhonePermissionLauncher.launch(Manifest.permission.CALL_PHONE)
+            }
+        }
+    }
+
+    /** Opens the USSD session (direct call, or pre-filled dialer without CALL_PHONE). */
+    private fun dialUssdNow(): Boolean {
+        val ok = UssdPayHelper.dial(this)
+        if (!ok) {
+            android.widget.Toast.makeText(
+                this,
+                "Couldn't open *99#. Dial ${UssdPayHelper.SCAN_TO_PAY_CODE} from your phone app.",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+        return ok
+    }
+
+    /**
+     * "Dial *99# again" — e.g. the USSD session timed out mid-menu (they do,
+     * after ~2 min). Same payment row; just re-copies the VPA and redials.
+     */
+    private fun redialUssd(paymentId: String) {
+        lifecycleScope.launch {
+            val payment = withContext(Dispatchers.IO) {
+                AppDatabase.getDatabase(this@QrScanActivity).pendingPaymentDao().getById(paymentId)
+            } ?: return@launch
+            if (UssdPayHelper.copyVpa(this@QrScanActivity, payment.payeeVpa)) ussdCopiedVpa = true
+            if (UssdPayHelper.hasCallPermission(this@QrScanActivity)) dialUssdNow()
+            else callPhonePermissionLauncher.launch(Manifest.permission.CALL_PHONE)
+        }
+    }
+
+    /**
+     * The user explicitly abandons the *99# payment. Only from PENDING: if the
+     * bank SMS already confirmed it, the bank wins. Clears the VPA too.
+     */
+    private fun cancelUssdPayment(paymentId: String) {
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                AppDatabase.getDatabase(this@QrScanActivity).pendingPaymentDao().compareAndSetStatus(
+                    paymentId,
+                    PendingPaymentStatus.PENDING.name,
+                    PendingPaymentStatus.FAILED.name
+                )
+            }
+            if (ussdCopiedVpa) {
+                UssdPayHelper.clearVpa(this@QrScanActivity)
+                ussdCopiedVpa = false
             }
         }
     }
@@ -513,12 +606,16 @@ private fun ScanAndPayFlow(
     billNote: String?,
     paymentId: String?,
     upiAppName: String?,
+    paidViaUssd: Boolean,
+    ussdBlockedReason: String?,
     onRequestCamera: () -> Unit,
     onOpenSettings: () -> Unit,
     onPay: (UpiPaymentRequest, Long, String?, (String) -> Unit) -> Unit,
     onPayViaUssd: (UpiPaymentRequest, Long, String?, (String) -> Unit) -> Unit,
     onCheckSmsAgain: (String, (String?) -> Unit) -> Unit,
     onMarkPaid: (String) -> Unit,
+    onUssdRedial: (String) -> Unit,
+    onUssdCancel: (String) -> Unit,
     onClose: () -> Unit
 ) {
     // Raw QR text survives rotation/process death; parsed on demand.
@@ -532,10 +629,13 @@ private fun ScanAndPayFlow(
                 PaymentStatusScreen(
                     paymentId = paymentId,
                     upiAppName = upiAppName,
+                    paidViaUssd = paidViaUssd,
                     billLabel = billLabel,
                     onRetry = { payment ->
-                        // Same payee and amount, fresh payment reference.
-                        onPay(
+                        // Same payee and amount, fresh payment reference,
+                        // over the same rail the user picked the first time.
+                        val retry = if (paidViaUssd) onPayViaUssd else onPay
+                        retry(
                             UpiPaymentRequest(
                                 vpa = payment.payeeVpa,
                                 payeeName = payment.payeeName,
@@ -549,6 +649,8 @@ private fun ScanAndPayFlow(
                     },
                     onCheckSmsAgain = onCheckSmsAgain,
                     onMarkPaid = onMarkPaid,
+                    onUssdRedial = onUssdRedial,
+                    onUssdCancel = onUssdCancel,
                     onDone = onClose
                 )
             }
@@ -570,6 +672,7 @@ private fun ScanAndPayFlow(
                     billNote = billNote,
                     onPay = onPay,
                     onPayViaUssd = onPayViaUssd,
+                    ussdBlockedReason = ussdBlockedReason,
                     onCancel = { scannedRaw = null }
                 )
             }
@@ -1099,6 +1202,7 @@ private fun PaymentReviewScreen(
     billNote: String?,
     onPay: (UpiPaymentRequest, Long, String?, (String) -> Unit) -> Unit,
     onPayViaUssd: (UpiPaymentRequest, Long, String?, (String) -> Unit) -> Unit,
+    ussdBlockedReason: String?,
     onCancel: () -> Unit
 ) {
     val amountFixedByQr = request.amount != null
@@ -1340,7 +1444,7 @@ private fun PaymentReviewScreen(
                         errorText = message
                     }
                 },
-                enabled = amount != null && !launching && !launchingUssd,
+                enabled = amount != null && !launching && !launchingUssd && ussdBlockedReason == null,
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
@@ -1357,6 +1461,15 @@ private fun PaymentReviewScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                 }
+            }
+            ussdBlockedReason?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                )
             }
             TextButton(
                 onClick = onCancel,
@@ -1377,10 +1490,13 @@ private fun PaymentReviewScreen(
 private fun PaymentStatusScreen(
     paymentId: String,
     upiAppName: String?,
+    paidViaUssd: Boolean,
     billLabel: String?,
     onRetry: (PendingPayment) -> Unit,
     onCheckSmsAgain: (String, (String?) -> Unit) -> Unit,
     onMarkPaid: (String) -> Unit,
+    onUssdRedial: (String) -> Unit,
+    onUssdCancel: (String) -> Unit,
     onDone: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1425,9 +1541,11 @@ private fun PaymentStatusScreen(
                 "$amountText paid to $payee" to
                     (current.upiRef?.let { "Bank confirmed · UPI Ref $it" } ?: "Bank confirmed")
             PendingPaymentStatus.PENDING ->
-                "Confirming payment…" to "Waiting for bank confirmation…"
+                if (paidViaUssd) "Complete the payment in *99#" to "Then wait for your bank's SMS — it can take a minute or two"
+                else "Confirming payment…" to "Waiting for bank confirmation…"
             PendingPaymentStatus.FAILED ->
-                "Payment failed" to "${appName.replaceFirstChar { it.uppercase() }} reported that the payment to $payee didn't go through."
+                if (paidViaUssd) "Payment cancelled" to "This *99# payment to $payee was cancelled."
+                else "Payment failed" to "${appName.replaceFirstChar { it.uppercase() }} reported that the payment to $payee didn't go through."
             PendingPaymentStatus.UNVERIFIED ->
                 "$amountText paid to $payee" to "Not yet verified by your bank SMS"
             PendingPaymentStatus.UNCONFIRMED ->
@@ -1484,6 +1602,13 @@ private fun PaymentStatusScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // Flowpay's on-screen guide: the USSD dialog sits on top of this
+            // screen, so the steps stay visible while the user works the menu.
+            if (paidViaUssd && status == PendingPaymentStatus.PENDING) {
+                UssdStepsCard(amountText = amountText, vpa = current.payeeVpa)
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
             // Details card: amount / payee / ref / time / what it's for.
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1508,12 +1633,18 @@ private fun PaymentStatusScreen(
 
             // Status-specific explanation.
             val explanation = when (status) {
-                PendingPaymentStatus.PENDING ->
+                PendingPaymentStatus.PENDING -> if (paidViaUssd)
+                    "*99# gives the app no result, so this updates on its own when your bank's debit " +
+                        "SMS arrives. You can close this screen once you've entered your PIN."
+                else
                     "We didn't get a clear answer from $appName. This updates on its own when your " +
                         "bank's debit SMS arrives — you can close this screen."
                 PendingPaymentStatus.VERIFIED_PENDING ->
                     "It's saved as paid. We'll quietly match it with your bank's debit SMS."
-                PendingPaymentStatus.FAILED ->
+                PendingPaymentStatus.FAILED -> if (paidViaUssd)
+                    "Nothing was saved. If money did leave your account, it'll show in your bank SMS — " +
+                        "add it as a manual expense."
+                else
                     "No money should have left your account, so nothing was saved."
                 PendingPaymentStatus.UNVERIFIED ->
                     "We couldn't verify this with your bank SMS — please double-check in your UPI app."
@@ -1540,6 +1671,19 @@ private fun PaymentStatusScreen(
 
         BottomActions {
             when (status) {
+                PendingPaymentStatus.PENDING -> if (paidViaUssd) {
+                    PrimaryAction("Dial *99# again") { onUssdRedial(current.id) }
+                    OutlinedButton(
+                        onClick = { onUssdCancel(current.id); refreshTick++ },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Cancel payment")
+                    }
+                    SecondaryAction("Close — I've entered my PIN", onDone)
+                } else {
+                    PrimaryAction("Done", onClick = onDone)
+                }
                 PendingPaymentStatus.FAILED -> {
                     PrimaryAction("Retry") { onRetry(current) }
                     SecondaryAction("Done", onDone)
@@ -1570,6 +1714,45 @@ private fun PaymentStatusScreen(
                     SecondaryAction("Done", onDone)
                 }
                 else -> PrimaryAction("Done", onClick = onDone)
+            }
+        }
+    }
+}
+
+/** Numbered *99# steps (ported from Flowpay's instructions card). */
+@Composable
+private fun UssdStepsCard(amountText: String, vpa: String) {
+    val context = LocalContext.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = "In the *99# window",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            UssdPayHelper.steps(amountText).forEachIndexed { i, step ->
+                Row(verticalAlignment = Alignment.Top) {
+                    Text(
+                        text = "${i + 1}.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.width(24.dp)
+                    )
+                    Text(
+                        text = step,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+            TextButton(onClick = { UssdPayHelper.copyVpa(context, vpa) }) {
+                Text("Copy UPI ID again")
             }
         }
     }

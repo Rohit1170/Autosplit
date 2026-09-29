@@ -313,7 +313,7 @@ fun ExpenseSplitScreen(
                         )
 
                         Text(
-                            text = "₹${"%.2f".format(expense.amount)}",
+                            text = formatRupeeIndian(expense.amount),
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
                             color = heroOnAccent
@@ -409,7 +409,7 @@ fun ExpenseSplitScreen(
                                 )
 
                                 Text(
-                                    text = "₹${"%.2f".format(currentTotal)}",
+                                    text = formatRupeeIndian(currentTotal),
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -431,7 +431,7 @@ fun ExpenseSplitScreen(
                                 )
 
                                 Text(
-                                    text = "₹${"%.2f".format(remaining)}",
+                                    text = formatRupeeIndian(remaining),
                                     fontWeight = FontWeight.Bold,
                                     color =
                                     if (splitAddsUp)

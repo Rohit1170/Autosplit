@@ -18,8 +18,8 @@ data class DateFilter(
 
     fun summary(): String = when (type) {
         DateFilterType.ALL -> "All time"
-        DateFilterType.LAST_WEEK -> "Last week"
-        DateFilterType.LAST_MONTH -> "Last month"
+        DateFilterType.LAST_WEEK -> "Last 7 days"
+        DateFilterType.LAST_MONTH -> "Last 30 days"
         DateFilterType.CUSTOM -> label?.takeIf { it.isNotBlank() } ?: "Custom range"
     }
 }
@@ -33,8 +33,24 @@ enum class ParticipantFilter {
     fun summary(): String = when (this) {
         ALL -> "Everyone"
         WITH_ME -> "With me"
-        WITHOUT_ME -> "Without me"
-        ONLY_ME -> "Only me"
-        ANY_FRIEND -> "Any friend"
+        WITHOUT_ME -> "For others"
+        ONLY_ME -> "Just me"
+        ANY_FRIEND -> "Shared"
+    }
+}
+
+/**
+ * Order of the Home "Recent Expenses" list. NEWEST is the default (grouped
+ * under month bars); the amount sorts show a flat list, since month bars
+ * make no sense once rows are no longer in date order.
+ */
+enum class AmountSort {
+    NEWEST, HIGH_TO_LOW, LOW_TO_HIGH;
+
+    /** Tap order of the single sort icon: newest -> high->low -> low->high -> newest. */
+    fun next(): AmountSort = when (this) {
+        NEWEST -> HIGH_TO_LOW
+        HIGH_TO_LOW -> LOW_TO_HIGH
+        LOW_TO_HIGH -> NEWEST
     }
 }

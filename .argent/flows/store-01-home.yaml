@@ -1,0 +1,6 @@
+steps:
+  - script: scripts/prepare-demo.mjs
+  - launch: com.example.splitwiseauto
+  - await: { visible: { text: { matches: '^Friends$' } }, timeout: 15000 }
+  - tap: { text: { matches: '^Home$' } }
+  - await: { idle: true, stableFor: 800 }

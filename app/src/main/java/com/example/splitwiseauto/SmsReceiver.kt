@@ -34,10 +34,13 @@ class SmsReceiver : BroadcastReceiver() {
         val smsBody = messageParts.joinToString(separator = "") { it.messageBody }
         val receivedAtMillis = messageParts.first().timestampMillis
 
-        Log.d(
-            "SMS_RECEIVER",
-            "SMS from: $sender\nMessage: $smsBody"
-        )
+        // Personal messages (from a phone number) are dropped right here —
+        // before any parsing — so a friend texting "money debited from
+        // ***1234 ... 50,000" can never become an expense. Never log the body.
+        if (sender == null || !isTransactionalSender(sender)) {
+            Log.d("SMS_RECEIVER", "Ignored SMS from a non-bank sender")
+            return
+        }
 
         // Send the reconstructed, full SMS to our existing parser
         val transaction = parseBankSms(

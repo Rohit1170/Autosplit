@@ -1023,9 +1023,5 @@ private fun formatMoney(
     amount: Double
 ): String {
 
-    return String.format(
-        Locale.US,
-        "₹%.2f",
-        amount
-    )
+    return formatRupeeIndian(amount)
 }

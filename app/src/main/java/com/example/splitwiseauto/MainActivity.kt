@@ -358,7 +358,7 @@ fun TransactionCard(
         ) {
 
             Text(
-                text = "₹${transaction.amount}",
+                text = formatRupeeIndian(transaction.amount),
                 style = MaterialTheme.typography.headlineLarge
             )
 
@@ -370,7 +370,7 @@ fun TransactionCard(
             Text("Type: ${transaction.type}")
             Text("Date: ${transaction.date}")
             Text("Merchant: ${transaction.merchant}")
-            Text("Balance: ₹${transaction.balance}")
+            Text("Balance: ${formatRupeeIndian(transaction.balance)}")
             Text("UPI: ${transaction.upi}")
         }
     }
@@ -392,6 +392,12 @@ fun parseBankSms(
     sender: String? = null,
     receivedAtMillis: Long = System.currentTimeMillis()
 ): Transaction? {
+    // Only bank / card / UPI-app sender IDs can create expenses. A message
+    // from a person's phone number ("money debited from ***1234 card ...")
+    // must never be read as a real transaction. `sender == null` is the
+    // manual "Paste bank SMS" path, where the user vouches for the text.
+    if (sender != null && !isTransactionalSender(sender)) return null
+
     val message = sms.replace(Regex("\\s+"), " ").trim()
     if (message.isBlank()) return null
 
@@ -459,6 +465,36 @@ fun parseBankSms(
         confidence = confidence,
         receivedAtMillis = receivedAtMillis
     )
+}
+
+/**
+ * True for the sender IDs banks, card issuers and UPI/fintech apps (CRED,
+ * slice, OneCard, Paytm…) send from; false for ordinary people.
+ *
+ * In India every business SMS goes out under a TRAI-DLT registered header:
+ * alphanumeric, shown as `AX-HDFCBK`, `JM-CREDIN-S`, or just `HDFCBK` on some
+ * phones. A person texting you always shows up as a phone number
+ * (`+919876543210`, `09876543210`) — so any all-digit sender is rejected.
+ * Promotional headers (the `-P` suffix) are rejected too: they're ads, not
+ * transaction alerts.
+ */
+fun isTransactionalSender(sender: String): Boolean {
+    val raw = sender.trim().uppercase(Locale.ROOT)
+    if (raw.isEmpty()) return false
+
+    // Phone numbers: only digits once +, spaces, dashes and brackets are removed.
+    val digitsOnly = raw.replace(Regex("[+\\s\\-()]"), "")
+    if (digitsOnly.all { it.isDigit() }) return false
+
+    // DLT header: optional 2-char operator/circle prefix, 3–9 alphanumeric
+    // header (at least one letter), optional -S / -T / -G / -P category suffix.
+    val dlt = Regex("""^(?:[A-Z0-9]{2}-)?([A-Z0-9]{3,9})(?:-([STGP]))?$""").matchEntire(raw)
+        ?: return false
+    val header = dlt.groupValues[1]
+    val category = dlt.groupValues[2]
+    if (header.none { it.isLetter() }) return false
+    if (category == "P") return false // promotional
+    return true
 }
 
 /** Extracts only a masked suffix; full account/card numbers are never retained. */

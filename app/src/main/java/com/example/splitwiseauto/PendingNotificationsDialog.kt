@@ -164,7 +164,7 @@ private fun PendingNotificationRow(
                     }
                 }
                 Text(
-                    text = "₹${item.amount} • ${item.bank}",
+                    text = "${formatRupeeIndian(item.amount)} • ${item.bank}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

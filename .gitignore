@@ -34,3 +34,7 @@ replay_pid*.log
 # Signing (keep private, back up separately)
 keystore.properties
 *.jks
+
+# goldie screenshot output
+/out/
+*.bak[0-9]

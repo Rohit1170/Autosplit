@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.NearMe
@@ -79,8 +80,25 @@ import kotlin.math.sqrt
 fun ExpenseMapScreen(
     expenses: List<Expense>,
     active: Boolean = true,
+    loaded: Boolean = true,
     modifier: Modifier = Modifier
 ) {
+    // Fresh install / no located expenses: show an empty state instead of
+    // spinning up Google Maps, the location prompt and marker/bounds code.
+    if (!loaded) {
+        LoadingStateView(modifier)
+        return
+    }
+    if (expenses.isEmpty()) {
+        EmptyStateView(
+            icon = Icons.Filled.Place,
+            title = "No expenses on the map yet",
+            message = "Expenses saved with a location will appear here as pins.",
+            modifier = modifier
+        )
+        return
+    }
+
     // Lazily create the Google Map only after the Map tab has actually been
     // opened at least once. The HorizontalPager pre-composes adjacent pages,
     // and MapView.onCreate blocks the main thread (~100ms+, plus heavy GC and
@@ -252,9 +270,9 @@ fun ExpenseMapScreen(
                     Marker(
                         state = MarkerState(position = cluster.center),
                         title = expense.merchant,
-                        snippet = "₹${String.format(Locale.US, "%.2f", expense.amount)} • ${expense.date}",
+                        snippet = "${formatRupeeIndian(expense.amount)} • ${expense.date}",
                         icon = rememberPillMarkerIcon(
-                            text = "₹${expense.amount.toBigDecimal().stripTrailingZeros().toPlainString()}",
+                            text = formatRupeeIndian(expense.amount),
                             color = category.fgColor
                         ),
                         onClick = {
@@ -340,7 +358,7 @@ fun ExpenseMapScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(expense.merchant, style = MaterialTheme.typography.titleMedium)
-                    Text("₹${String.format(Locale.US, "%.2f", expense.amount)} • ${expense.date}")
+                    Text("${formatRupeeIndian(expense.amount)} • ${expense.date}")
                     Text(expense.bank, style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -435,7 +453,7 @@ fun ExpenseMapScreen(
                                             )
                                         }
                                         Text(
-                                            text = "₹${String.format(Locale.US, "%.2f", expense.amount)}",
+                                            text = formatRupeeIndian(expense.amount),
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -470,7 +488,7 @@ fun ExpenseMapScreen(
                             ) {
                                 Text(expense.merchant, style = MaterialTheme.typography.titleSmall)
                                 Text(
-                                    "₹${String.format(Locale.US, "%.2f", expense.amount)} • ${expense.date}",
+                                    "${formatRupeeIndian(expense.amount)} • ${expense.date}",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }

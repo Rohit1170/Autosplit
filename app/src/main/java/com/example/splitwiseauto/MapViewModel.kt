@@ -13,6 +13,10 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
     private val _expensesWithLocation = MutableStateFlow<List<Expense>>(emptyList())
     val expensesWithLocation: StateFlow<List<Expense>> = _expensesWithLocation
 
+    /** False until the first load finishes, so the empty state doesn't flash. */
+    private val _loaded = MutableStateFlow(false)
+    val loaded: StateFlow<Boolean> = _loaded
+
     fun loadExpenses() {
         viewModelScope.launch {
             // Same shared, Room-observed history Home/Insights/Friends use
@@ -21,6 +25,7 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
             _expensesWithLocation.value = ExpenseRepository.allExpenses(database.expenseDao())
                 .map { it.expense }
                 .filter { it.latitude != null && it.longitude != null }
+            _loaded.value = true
         }
     }
 }
