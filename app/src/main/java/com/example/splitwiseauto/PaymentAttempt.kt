@@ -22,15 +22,12 @@ enum class PaymentRail {
 }
 
 /**
- * One row per "Pay" tap from Scan & Pay — the single source of truth for an
- * in-flight (or finished) payment. [PaymentSessionManager] is the only
- * writer of [status]; nothing else in the app updates this table directly.
- * Rows are never deleted, including FAILED/TIMEOUT/CANCELLED ones — they
- * stay for audit, per the locked design (no destructive cleanup).
- *
- * Inserted with status=INITIATING BEFORE the call is placed, so a process
- * death mid-dial still leaves a row [PaymentSessionManager.reconcileOnStart]
- * can find and resolve on next launch.
+ * LEGACY — from the retired *99# USSD Scan & Pay flow. Nothing creates new
+ * rows anymore (Scan & Pay now uses the UPI intent flow, see PendingPayment),
+ * and nothing matches SMS against these rows. The entity and table are kept
+ * only because Room migrations here are additive-only: existing rows stay
+ * for audit, and ExpenseConfirmationActivity still honours the old
+ * paymentAttemptId link on any pending expense queued before the change.
  */
 @Entity(tableName = "payment_attempts")
 data class PaymentAttempt(

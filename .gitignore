@@ -30,3 +30,7 @@ local.properties
 # JVM crash/replay logs that can land in the project root.
 hs_err_pid*.log
 replay_pid*.log
+
+# Signing (keep private, back up separately)
+keystore.properties
+*.jks

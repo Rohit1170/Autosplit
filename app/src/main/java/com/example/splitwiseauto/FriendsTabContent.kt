@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -108,7 +109,7 @@ fun FriendsTabContent(
             .padding(horizontal = 16.dp),
 
         contentPadding = PaddingValues(
-            top = 16.dp,
+            top = TAB_CONTENT_TOP_GAP,
             bottom = 24.dp
         ),
 
@@ -125,7 +126,7 @@ fun FriendsTabContent(
         }
 
         item {
-            FriendsBalanceSummary(owedToYou = totalOwedToYou, youOwe = youOwe)
+            FriendsBalanceSummary(owedToYou = totalOwedToYou, youOwe = youOwe, mySpent = mySpent)
             Spacer(modifier = Modifier.height(4.dp))
         }
 
@@ -260,12 +261,14 @@ private fun FriendsFilterChip(label: String, selected: Boolean, onClick: () -> U
 }
 
 /**
- * Summary card — same "Friends owe you" total as before, now paired with
- * "You owe" right beside it (an explicit "All clear" when it's zero,
- * instead of silently omitting the number).
+ * Summary card — same "Friends owe you" / "You owe" pair as before, now
+ * with a third row underneath for the user's own part: their total spend
+ * after splitting (their share of every expense, whether or not it was
+ * shared with anyone — same figure Home's personal total already tracks,
+ * just surfaced here too).
  */
 @Composable
-private fun FriendsBalanceSummary(owedToYou: Double, youOwe: Double) {
+private fun FriendsBalanceSummary(owedToYou: Double, youOwe: Double, mySpent: Double) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -273,35 +276,58 @@ private fun FriendsBalanceSummary(owedToYou: Double, youOwe: Double) {
             containerColor = MaterialTheme.colorScheme.secondaryContainer
         )
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp)
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Friends owe you",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = formatAmount(owedToYou),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = FriendsTokens.accent()
-                )
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Friends owe you",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = formatAmount(owedToYou),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = FriendsTokens.accent()
+                    )
+                }
+                Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "You owe",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = if (youOwe > 0.01) formatAmount(youOwe) else "You owe ₹0",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = if (youOwe > 0.01) FriendsTokens.warn() else FriendsTokens.mut()
+                    )
+                }
             }
-            Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+
+            Divider(color = FriendsTokens.line())
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = "You owe",
+                    text = "Your part (after splitting)",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = if (youOwe > 0.01) formatAmount(youOwe) else "You owe ₹0",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = if (youOwe > 0.01) FriendsTokens.warn() else FriendsTokens.mut()
+                    text = formatAmount(mySpent),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -461,7 +487,7 @@ private fun sendReminder(context: Context, friend: Friend, amount: Double) {
         type = "text/plain"
         putExtra(
             Intent.EXTRA_TEXT,
-            "Hey ${friend.name}, friendly reminder — you owe me ${formatAmount(amount)} on SplitWiseAuto."
+            "Hey ${friend.name}, friendly reminder — you owe me ${formatAmount(amount)} on Splitlee."
         )
     }
     context.startActivity(Intent.createChooser(intent, "Remind ${friend.name}"))

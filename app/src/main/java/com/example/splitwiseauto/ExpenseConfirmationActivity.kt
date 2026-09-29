@@ -181,7 +181,11 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                                     database.pendingExpenseNotificationDao().deleteById(id)
                                 }
                             }
-                            finish()
+                            // Not just finish(): this screen is only ever
+                            // reached from a notification tap and has no
+                            // reason to leave a resumable task behind (see
+                            // the matching note in saveExpense()).
+                            finishAndRemoveTask()
                         }
                     )
                 }
@@ -269,7 +273,30 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                 database.paymentAttemptDao().setAdoptedExpenseId(id, expenseId)
             }
 
-            finish()
+            // Scan & Pay (UPI intent flow): the confirming SMS's reference is
+            // this expense's `upi` and the PendingPayment's upiRef, so link
+            // the payment to the expense it became — unless it was started
+            // from a specific bill, which stays its link.
+            if (source == PendingPaymentMatcher.SOURCE_SCAN_PAY && upi != "Unknown") {
+                val paymentDao = database.pendingPaymentDao()
+                paymentDao.findByUpiRef(upi)?.let { payment ->
+                    if (payment.billId == null) {
+                        paymentDao.linkBill(payment.id, expenseId.toString())
+                    }
+                }
+            }
+
+            // finishAndRemoveTask(), not finish(): this screen is only ever
+            // opened from a notification tap, so it always sits in its own
+            // task rather than on top of the app's normal back stack. Plain
+            // finish() ends the Activity but can still leave that task's
+            // entry sitting in Recents/App Switcher for a moment — long
+            // enough that reopening it from there could resume this same
+            // screen with the same pre-filled amount and let "Save Expense"
+            // fire a second time, silently duplicating the expense.
+            // finishAndRemoveTask() tears the whole task down immediately,
+            // so there's nothing left in Recents to reopen.
+            finishAndRemoveTask()
         }
 
     }
@@ -317,6 +344,13 @@ private fun ExpenseConfirmationScreen(
             mutableStateMapOf<String, Double>()
         }
     var hasEditedSplit by remember { mutableStateOf(false) }
+
+    // Guards against a double-fire of "Save Expense" — a fast double-tap, or
+    // (belt-and-suspenders alongside finishAndRemoveTask()/excludeFromRecents
+    // on this activity) this screen somehow being re-entered before the
+    // first save has finished tearing the screen down — either of which
+    // would otherwise insert the same expense twice.
+    var saving by remember { mutableStateOf(false) }
 
     /*
      * Load friends.
@@ -642,6 +676,29 @@ private fun ExpenseConfirmationScreen(
                         hasEditedSplit = true
 
                         /*
+                         * If every other selected person already has a
+                         * manual amount, marking this one manual too would
+                         * leave nobody left to automatically absorb the
+                         * remainder — the split would stop adding up, and
+                         * editing this field would stop being reflected
+                         * anywhere except itself. So when that's about to
+                         * happen, clear everyone else's manual override
+                         * first: they go back to auto-splitting whatever's
+                         * left, same as if this were the very first edit.
+                         */
+                        val otherManual =
+                            selectedPeople.filter {
+                                it != person.name && manualAmounts.containsKey(it)
+                            }
+
+                        if (
+                            selectedPeople.size > 1 &&
+                            otherManual.size == selectedPeople.size - 1
+                        ) {
+                            otherManual.forEach { manualAmounts.remove(it) }
+                        }
+
+                        /*
                          * This amount becomes a manual
                          * override.
                          */
@@ -716,11 +773,12 @@ private fun ExpenseConfirmationScreen(
 
             Button(
                 onClick = {
-                    if (selectedPeople.isNotEmpty() && abs(remaining) < 0.01) {
+                    if (!saving && selectedPeople.isNotEmpty() && abs(remaining) < 0.01) {
+                        saving = true
                         onSave(amounts)
                     }
                 },
-                enabled = selectedPeople.isNotEmpty() && abs(remaining) < 0.01,
+                enabled = !saving && selectedPeople.isNotEmpty() && abs(remaining) < 0.01,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(

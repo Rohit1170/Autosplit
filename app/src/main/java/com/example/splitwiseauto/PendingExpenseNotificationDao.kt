@@ -16,6 +16,13 @@ interface PendingExpenseNotificationDao {
     @Query("SELECT COUNT(*) FROM pending_expense_notifications")
     suspend fun getCount(): Int
 
+    /** A queued (not yet saved) expense carrying this UPI/bank reference, if any. */
+    @Query("SELECT * FROM pending_expense_notifications WHERE upi = :upi LIMIT 1")
+    suspend fun findByUpi(upi: String): PendingExpenseNotification?
+
+    @Query("DELETE FROM pending_expense_notifications WHERE upi = :upi")
+    suspend fun deleteByUpi(upi: String)
+
     @Query("DELETE FROM pending_expense_notifications WHERE id = :id")
     suspend fun deleteById(id: Int)
 }

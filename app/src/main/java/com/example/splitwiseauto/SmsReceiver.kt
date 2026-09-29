@@ -46,69 +46,65 @@ class SmsReceiver : BroadcastReceiver() {
             receivedAtMillis = receivedAtMillis
         )
 
-        // goAsync fires unconditionally now, right after parsing — a
-        // confirming/failing bank SMS is the ONLY thing that can ever
-        // resolve a Scan & Pay attempt (never call state or duration alone),
-        // so every SMS has to at least be checked against the payment-attempt
-        // queue before falling through to the older detected-expense path.
+        // goAsync so the database work below can finish after onReceive
+        // returns. The raw SMS body is only ever held in memory here — only
+        // parsed, structured fields are persisted.
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                // Scan & Pay adoption gets first look. If this SMS resolves an
-                // attempt that's waiting on verification (or already timed
-                // out but still resolvable), PaymentSmsAdopter claims it,
-                // inserts its own pending-notification row (source =
-                // "scan_pay") on success, and this SMS is done — it is NOT
-                // also run through the generic detected-expense flow below.
-                val adopted = PaymentSmsAdopter.tryAdopt(
-                    context = context,
-                    smsBody = smsBody,
-                    transaction = transaction,
-                    receivedAtMillis = receivedAtMillis
-                )
-                if (adopted) {
-                    return@launch
-                }
+                val debit = transaction?.takeIf { it.type == "DEBIT" } ?: return@launch
 
-                val transactions = listOfNotNull(
-                    transaction?.takeIf { it.type == "DEBIT" && !isDuplicateSms(context, sender, smsBody) }?.also {
-                        Log.d(
-                            "SMS_RECEIVER",
-                            "Transaction detected: ₹${it.amount} at ${it.merchant}"
-                        )
-                    }
-                )
+                // A redelivered copy of the same SMS is ignored — checked
+                // BEFORE payment matching so a repeat can't fall through to
+                // the generic flow and create a second pending expense.
+                if (isDuplicateSms(context, sender, smsBody)) return@launch
 
-                if (transactions.isEmpty()) return@launch
+                // Scan & Pay matcher runs FIRST. If this debit belongs to a
+                // pending Scan & Pay payment (exact UPI ref, or same amount
+                // within 15 minutes), the matcher marks it CONFIRMED and links
+                // it to its expense/bill — and this SMS must NOT also go
+                // through the generic flow below, or the user would be asked
+                // to split a payment that's already assigned.
+                val handledByPaymentMatcher =
+                    PendingPaymentMatcher.tryConfirm(context, debit, smsBody, receivedAtMillis)
+                if (handledByPaymentMatcher) return@launch
+
+                // Not a Scan & Pay payment: normal flow (queue + split prompt).
+                Log.d(
+                    "SMS_RECEIVER",
+                    "Transaction detected: ₹${debit.amount} at ${debit.merchant}"
+                )
 
                 val database = AppDatabase.getDatabase(context)
-                transactions.forEach { txn ->
-                    val location = LocationHelper.getCurrentLocation(context)
-                    val withLocation = txn.copy(
-                        latitude = location?.latitude,
-                        longitude = location?.longitude
+                val location = LocationHelper.getCurrentLocation(context)
+                val withLocation = debit.copy(
+                    latitude = location?.latitude,
+                    longitude = location?.longitude
+                )
+
+                // Persisted the moment it's detected — before the system notification
+                // even shows — so if the user swipes that notification away without
+                // tapping it, this expense is still recoverable from inside the app.
+                val pendingId = database.pendingExpenseNotificationDao().insert(
+                    PendingExpenseNotification(
+                        amount = withLocation.amount,
+                        merchant = withLocation.merchant,
+                        bank = withLocation.bank,
+                        date = withLocation.date,
+                        balance = withLocation.balance,
+                        upi = withLocation.upi,
+                        accountIdentifier = withLocation.accountIdentifier,
+                        latitude = withLocation.latitude,
+                        longitude = withLocation.longitude,
+                        timestampMillis = withLocation.receivedAtMillis
                     )
+                ).toInt()
 
-                    // Persisted the moment it's detected — before the system notification
-                    // even shows — so if the user swipes that notification away without
-                    // tapping it, this expense is still recoverable from inside the app.
-                    val pendingId = database.pendingExpenseNotificationDao().insert(
-                        PendingExpenseNotification(
-                            amount = withLocation.amount,
-                            merchant = withLocation.merchant,
-                            bank = withLocation.bank,
-                            date = withLocation.date,
-                            balance = withLocation.balance,
-                            upi = withLocation.upi,
-                            accountIdentifier = withLocation.accountIdentifier,
-                            latitude = withLocation.latitude,
-                            longitude = withLocation.longitude,
-                            timestampMillis = withLocation.receivedAtMillis
-                        )
-                    ).toInt()
-
-                    showExpenseNotification(context, withLocation, pendingId)
-                }
+                showExpenseNotification(context, withLocation, pendingId)
+            } catch (e: Exception) {
+                // Never let one bad SMS crash the receiver; log type only,
+                // never the message text.
+                Log.e("SMS_RECEIVER", "Failed to process SMS: ${e.javaClass.simpleName}")
             } finally {
                 pendingResult.finish()
             }

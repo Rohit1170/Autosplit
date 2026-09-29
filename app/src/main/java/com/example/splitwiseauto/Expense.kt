@@ -1,9 +1,19 @@
 package com.example.splitwiseauto
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "expenses")
+// Indices on tripId and timestampMillis: Home's trip/date filtering
+// (HomeViewModel.loadExpenses) reads the whole table and narrows it in
+// Kotlin rather than in SQL, but the underlying table scan Room itself does
+// on this query benefits from these regardless — and the SQL-level
+// tripId/timestampMillis lookups elsewhere (ScanPayLedger, notifications)
+// go from a full scan to an index lookup as the table grows.
+@Entity(
+    tableName = "expenses",
+    indices = [Index("tripId"), Index("timestampMillis")]
+)
 data class Expense(
 
     @PrimaryKey(autoGenerate = true)

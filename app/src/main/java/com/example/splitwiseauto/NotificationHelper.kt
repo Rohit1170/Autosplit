@@ -8,31 +8,42 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
-@RequiresApi(Build.VERSION_CODES.O)
 fun showExpenseNotification(
     context: Context,
     transaction: Transaction,
-    pendingNotificationId: Int
+    pendingNotificationId: Int,
+    // "scan_pay" when this notification is for a Scan & Pay payment the bank
+    // SMS just confirmed — lets the confirmation screen link the saved expense
+    // back to its PendingPayment. null for ordinary SMS-detected expenses.
+    source: String? = null
 ) {
 
     val channelId = "expense_channel"
 
-    val notificationManager =
-        context.getSystemService(
-            Context.NOTIFICATION_SERVICE
-        ) as NotificationManager
+    // NotificationChannel itself is an API 26+ class — on API 24/25 devices
+    // (this app's minSdk is 24) even constructing one throws at runtime.
+    // Channels don't exist below O, and NotificationCompat.Builder.build()
+    // below works fine without one, so this whole block is skippable
+    // rather than something to route around with @RequiresApi (which only
+    // silences the lint warning, it doesn't add the runtime check needed
+    // to actually avoid the crash on those older devices).
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val notificationManager =
+            context.getSystemService(
+                Context.NOTIFICATION_SERVICE
+            ) as NotificationManager
 
-    val channel = NotificationChannel(
-        channelId,
-        "Expense Notifications",
-        NotificationManager.IMPORTANCE_HIGH
-    )
+        val channel = NotificationChannel(
+            channelId,
+            "Expense Notifications",
+            NotificationManager.IMPORTANCE_HIGH
+        )
 
-    notificationManager.createNotificationChannel(channel)
+        notificationManager.createNotificationChannel(channel)
+    }
 
     // Open confirmation screen when notification is tapped
     val intent = Intent(
@@ -50,6 +61,7 @@ fun showExpenseNotification(
         transaction.longitude?.let { putExtra("longitude", it) }
         putExtra("timestampMillis", transaction.receivedAtMillis)
         putExtra("pendingNotificationId", pendingNotificationId)
+        source?.let { putExtra("source", it) }
     }
 
     val pendingIntent = PendingIntent.getActivity(

@@ -72,7 +72,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         currentParticipantFilter = participantFilter
         currentSelectedFriendNames = selectedFriendNames
         viewModelScope.launch {
-            val allData = db.expenseDao().getAllExpensesWithParticipants()
+            val allData = ExpenseRepository.allExpenses(db.expenseDao())
             val tripFiltered = if (tripId == null) allData else allData.filter { it.expense.tripId == tripId }
 
             val now = System.currentTimeMillis()

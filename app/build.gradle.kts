@@ -1,7 +1,21 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.kapt")
+}
+
+// Release signing is read from keystore.properties (gitignored). If that file
+// is missing (e.g. a fresh clone without the keystore), release builds fall
+// back to unsigned config so the project still opens — you just can't produce
+// a signed release APK until you restore keystore.properties + the .jks.
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) {
+        FileInputStream(keystorePropsFile).use { load(it) }
+    }
 }
 
 android {
@@ -12,8 +26,8 @@ android {
         applicationId = "com.example.splitwiseauto"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -32,13 +46,34 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystoreProps.getProperty("storeFile") != null) {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: shrink + optimize + obfuscate. This is the big one for
+            // smoothness (debug builds run un-optimized). resource shrinking
+            // removes unused resources. Keep-rules live in proguard-rules.pro.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Only sign with the release key when keystore.properties is present.
+            signingConfig = if (keystoreProps.getProperty("storeFile") != null) {
+                signingConfigs.getByName("release")
+            } else {
+                null
+            }
         }
     }
     compileOptions {
@@ -50,6 +85,13 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    lint {
+        // The Fragment version is already bumped in dependencies to satisfy
+        // registerForActivityResult; this keeps the (now-fixed) check from
+        // ever blocking a release APK. The app uses ComponentActivity's own
+        // result APIs, which work regardless of the Fragment version.
+        disable += "InvalidFragmentVersionForActivityResult"
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.4.3"
@@ -92,6 +134,12 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.9.0")
 
+    // Pin a modern Fragment so lint-vital (release) accepts
+    // registerForActivityResult — the transitive Fragment version was older
+    // than the 1.3.0 that ActivityResult APIs require. 1.6.2 is the newest
+    // line that still targets compileSdk 34.
+    implementation("androidx.fragment:fragment-ktx:1.6.2")
+
     implementation(platform("androidx.compose:compose-bom:2023.03.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
@@ -114,6 +162,11 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.1")
     implementation("androidx.camera:camera-view:1.4.1")
     implementation("com.google.zxing:core:3.5.3")
+
+    // Scan & Pay: periodic worker that marks PENDING payments with no
+    // confirming bank SMS after 30 min as UNCONFIRMED. 2.9.x is the last
+    // line that supports compileSdk 34 (2.10+ needs compileSdk 35).
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

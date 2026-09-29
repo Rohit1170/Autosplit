@@ -57,7 +57,7 @@ class FriendViewModel : ViewModel() {
             }
             val calculatedBalances = mutableMapOf<Int, FriendBalance>()
 
-            expenseDao.getAllExpensesWithParticipants().forEach { expenseWithParticipants ->
+            ExpenseRepository.allExpenses(expenseDao).forEach { expenseWithParticipants ->
                 val paidByMe = expenseWithParticipants.expense.payer.equals(
                     "Me",
                     ignoreCase = true

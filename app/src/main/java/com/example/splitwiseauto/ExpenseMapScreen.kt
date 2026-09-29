@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -77,8 +78,23 @@ import kotlin.math.sqrt
 @Composable
 fun ExpenseMapScreen(
     expenses: List<Expense>,
+    active: Boolean = true,
     modifier: Modifier = Modifier
 ) {
+    // Lazily create the Google Map only after the Map tab has actually been
+    // opened at least once. The HorizontalPager pre-composes adjacent pages,
+    // and MapView.onCreate blocks the main thread (~100ms+, plus heavy GC and
+    // GMS calls) — doing that eagerly at app startup / during a swipe was a
+    // major source of the jank seen in the logs. Until the tab is opened we
+    // render a cheap placeholder, so Home and Insights stay smooth. Once
+    // opened, the flag stays true so the map isn't torn down on tab switches.
+    var mapActivated by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(active) { if (active) mapActivated = true }
+    if (!mapActivated) {
+        Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        return
+    }
+
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var selectedExpense by remember { mutableStateOf<Expense?>(null) }
@@ -196,15 +212,16 @@ fun ExpenseMapScreen(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
             properties = MapProperties(
-                isMyLocationEnabled = hasLocationPermission,
+                isMyLocationEnabled = hasLocationPermission && LocationHelper.hasLocationPermission(context),
                 // Full-bleed dark map to match the rest of the redesign —
                 // only applied in system dark mode, so light mode keeps the
                 // standard map instead of forcing dark on everyone.
                 mapStyleOptions = if (darkTheme) MapStyleOptions(DARK_MAP_STYLE_JSON) else null
             ),
-            // Keeps the native "my location" button clear of the floating
-            // bell/mode-chip row drawn on top of this screen.
-            contentPadding = PaddingValues(top = 64.dp),
+            // The bell/Main row is a real header above the pager now, not an
+            // overlay on the map, so the map's own controls (my-location
+            // button) only need the same small top gap as every other tab.
+            contentPadding = PaddingValues(top = TAB_CONTENT_TOP_GAP),
             onMapLoaded = { mapLoaded = true },
             onMyLocationButtonClick = {
                 // NOTE: onMyLocationClick below only fires if the user taps the blue
@@ -215,8 +232,9 @@ fun ExpenseMapScreen(
                 false // let the map SDK perform its own default camera move
             },
             onMyLocationClick = {
-                currentLocation = LocationSnapshot(it.latitude, it.longitude)
-                LocationHelper.saveLastKnownLocation(context, currentLocation!!)
+                val snapshot = LocationSnapshot(it.latitude, it.longitude)
+                currentLocation = snapshot
+                LocationHelper.saveLastKnownLocation(context, snapshot)
                 locationStatus = "Showing your current location"
                 initialCameraApplied = true
                 isResolvingLocation = false
@@ -303,7 +321,7 @@ fun ExpenseMapScreen(
             Card(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(16.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = TAB_CONTENT_TOP_GAP, bottom = 16.dp)
             ) {
                 Text(
                     text = locationStatus,
@@ -522,7 +540,11 @@ private fun createPillBitmapDescriptor(text: String, backgroundArgb: Int): Bitma
     val textY = bitmap.height / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
     canvas.drawText(text, bitmap.width / 2f, textY, textPaint)
 
-    return BitmapDescriptorFactory.fromBitmap(bitmap)
+    // fromBitmap needs the Maps SDK initialized; MapsInitializer at startup
+    // covers that, but fall back to a plain default marker rather than crash
+    // the entire Map tab if anything here ever fails.
+    return runCatching { BitmapDescriptorFactory.fromBitmap(bitmap) }
+        .getOrElse { BitmapDescriptorFactory.defaultMarker() }
 }
 
 private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {

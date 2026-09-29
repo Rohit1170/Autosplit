@@ -234,4 +234,42 @@ class TransactionParserTest {
 
         assertEquals(null, transaction)
     }
+
+    @Test
+    fun parsesIciciCreditedNameWithoutBalance() {
+        // ICICI/GPay style: payee name after ';' with NO balance before it —
+        // used to fall through to "Unknown".
+        val transaction = parseBankSms(
+            "ICICI Bank Acct XX529 debited for Rs 250.00 on 28-Sep-26; Rahul Sharma credited. UPI:445566778899."
+        )
+        assertNotNull(transaction)
+        assertEquals("DEBIT", transaction?.type)
+        assertEquals("250.00", transaction?.amount)
+        assertEquals("Rahul Sharma", transaction?.merchant)
+        assertEquals("445566778899", transaction?.upi)
+    }
+
+    @Test
+    fun parsesSbiTrfToNameWithRefno() {
+        // SBI UPI: "trf to NAME Refno 123" — the name must stop at "Refno".
+        val transaction = parseBankSms(
+            "Dear UPI user A/C X8888 debited by 480.0 on date 28Sep26 trf to PRIYA MENON Refno 556677889900. -SBI",
+            sender = "SBIINB"
+        )
+        assertNotNull(transaction)
+        assertEquals("DEBIT", transaction?.type)
+        assertEquals("480.00", transaction?.amount)
+        assertEquals("PRIYA MENON", transaction?.merchant)
+    }
+
+    @Test
+    fun parsesHdfcSentToNameOnDate() {
+        val transaction = parseBankSms(
+            "Sent Rs.1500.00 From HDFC Bank A/C x1234 To Anil Kumar On 28-09-26 Ref 123456789012. Not You? Call 18002586161"
+        )
+        assertNotNull(transaction)
+        assertEquals("DEBIT", transaction?.type)
+        assertEquals("1500.00", transaction?.amount)
+        assertEquals("Anil Kumar", transaction?.merchant)
+    }
 }

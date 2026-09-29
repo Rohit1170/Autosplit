@@ -9,14 +9,23 @@ import kotlinx.coroutines.launch
 
 class PendingNotificationsViewModel(application: Application) : AndroidViewModel(application) {
 
+    private companion object {
+        const val RECENT_PAYMENTS = 5
+    }
+
     private val db = AppDatabase.getDatabase(application)
 
     private val _pending = MutableStateFlow<List<PendingExpenseNotification>>(emptyList())
     val pending: StateFlow<List<PendingExpenseNotification>> = _pending
 
+    // Most recent Scan & Pay payments, for the status list in the dialog.
+    private val _payments = MutableStateFlow<List<PendingPayment>>(emptyList())
+    val payments: StateFlow<List<PendingPayment>> = _payments
+
     fun refresh() {
         viewModelScope.launch {
             _pending.value = db.pendingExpenseNotificationDao().getAll()
+            _payments.value = db.pendingPaymentDao().getRecent(RECENT_PAYMENTS)
         }
     }
 

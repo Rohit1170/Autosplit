@@ -29,6 +29,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -36,6 +38,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,7 +48,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.content.Intent
+import android.widget.Toast
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import com.example.splitwiseauto.ui.theme.glassBorderColor
 import com.example.splitwiseauto.ui.theme.glassCardColor
 import com.example.splitwiseauto.ui.theme.positiveColor
@@ -61,21 +68,35 @@ fun InsightsScreen(
     val trend by viewModel.spendTrend.collectAsState()
     val categoryBreakdown by viewModel.categoryBreakdown.collectAsState()
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val onExport: () -> Unit = {
+        scope.launch {
+            val intent = ExpenseExporter.buildShareIntent(context)
+            if (intent == null) {
+                Toast.makeText(context, "No expenses to export yet", Toast.LENGTH_SHORT).show()
+            } else {
+                context.startActivity(Intent.createChooser(intent, "Export expenses (CSV)"))
+            }
+        }
+    }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp),
-        // Top padding clears the floating mode-chip/bell row that sits above
-        // every tab, so the header sits below it instead of trying to dodge
-        // it sideways (which broke down once the mode chip made that row wider).
-        contentPadding = PaddingValues(top = 64.dp, bottom = 24.dp),
+        // The Main/bell row is now a real header above the pager (not a
+        // floating overlay), so the old 54dp clearance just left an extra gap.
+        // Same top gap as every other tab.
+        contentPadding = PaddingValues(top = TAB_CONTENT_TOP_GAP, bottom = 18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
             InsightsHeader(
                 selectedMonth = selectedMonth,
                 availableMonths = availableMonths,
-                onMonthSelected = viewModel::selectMonth
+                onMonthSelected = viewModel::selectMonth,
+                onExport = onExport
             )
         }
 
@@ -93,7 +114,8 @@ fun InsightsScreen(
 private fun InsightsHeader(
     selectedMonth: MonthKey,
     availableMonths: List<MonthKey>,
-    onMonthSelected: (MonthKey) -> Unit
+    onMonthSelected: (MonthKey) -> Unit,
+    onExport: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -106,11 +128,21 @@ private fun InsightsHeader(
             fontWeight = FontWeight.Medium
         )
 
-        MonthSelector(
-            selectedMonth = selectedMonth,
-            availableMonths = availableMonths,
-            onMonthSelected = onMonthSelected
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onExport) {
+                Icon(
+                    imageVector = Icons.Filled.IosShare,
+                    contentDescription = "Export expenses as CSV",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.size(4.dp))
+            MonthSelector(
+                selectedMonth = selectedMonth,
+                availableMonths = availableMonths,
+                onMonthSelected = onMonthSelected
+            )
+        }
     }
 }
 

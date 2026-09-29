@@ -74,6 +74,15 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
     private val _selectedMonth = MutableStateFlow(MonthKey.current())
     val selectedMonth: StateFlow<MonthKey> = _selectedMonth
 
+    // True while the user is looking at "the current month" (the default).
+    // Android can keep this ViewModel alive for days, so without this a
+    // September selection would stay stuck on September after 1 October,
+    // showing it as a finished month and hiding October's spending. When
+    // this is true, the next load (e.g. reopening the app) moves the
+    // selection forward to the new month. If the user deliberately picked
+    // an older month, this is false and their choice is left alone.
+    private var followCurrentMonth = true
+
     private val _availableMonths = MutableStateFlow<List<MonthKey>>(listOf(MonthKey.current()))
     val availableMonths: StateFlow<List<MonthKey>> = _availableMonths
 
@@ -89,7 +98,7 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
     fun loadExpenses(tripId: Int? = null) {
         currentTripId = tripId
         viewModelScope.launch {
-            val fetched = db.expenseDao().getAllExpensesWithParticipants()
+            val fetched = ExpenseRepository.allExpenses(db.expenseDao())
             allExpenses = if (tripId == null) fetched else fetched.filter { it.expense.tripId == tripId }
 
             tripNamesById = if (tripId == null) {
@@ -108,12 +117,18 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
                     .distinct()
                     .sortedWith(compareByDescending<MonthKey> { it.year }.thenByDescending { it.month })
 
+            val nowMonth = MonthKey.current()
+            if (followCurrentMonth && _selectedMonth.value != nowMonth) {
+                _selectedMonth.value = nowMonth
+            }
+
             recomputeSpendTrend()
             recomputeCategoryBreakdown()
         }
     }
 
     fun selectMonth(month: MonthKey) {
+        followCurrentMonth = month == MonthKey.current()
         _selectedMonth.value = month
         recomputeSpendTrend()
         recomputeCategoryBreakdown()

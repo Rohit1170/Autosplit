@@ -16,51 +16,30 @@
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!--
-      CALL_PHONE places the call for "Scan & Pay" via ACTION_CALL — the app
-      dials the *99# USSD code (or the relevant IVR number) and then hands
-      the live call straight to the user's own dialer/USSD/IVR session. The
-      app never sees, reads, or injects anything into that session — no UPI
-      PIN ever passes through this app. This is an honest handoff, not
-      automation. If this permission is denied, the flow falls back to
-      ACTION_DIAL, which needs no permission and just pre-fills the dialer
-      for the user to tap Call themselves.
+      Scan & Pay hands payments to the user's own UPI app via a standard
+      upi://pay intent. No phone/call permissions are needed for that path,
+      the app never sees the UPI PIN, and it makes no network calls:
+      confirmation comes only from the bank's debit SMS (RECEIVE_SMS above).
+    -->
+    <!--
+      Offline "*99#" payment mode: lets a *99# USSD session be dialed with
+      one tap instead of opening the phone dialer manually. Optional — if
+      this is ever denied, UssdPayHelper falls back to opening the dialer
+      pre-filled, which needs no permission at all.
     -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
-    <!--
-      READ_PHONE_STATE is outside the feature's originally-agreed permission
-      list (CALL_PHONE, RECEIVE_SMS, CAMERA, SYSTEM_ALERT_WINDOW — the last
-      of which this feature no longer uses at all, see below) — flagging
-      that explicitly here. It is used for two honest-handoff support
-      features only:
-        1. Watching call-state transitions (offhook -> idle) to measure how
-           long the handed-off call lasted, so a call that ends in under
-           ~5 seconds is treated as user-cancelled instead of left pending
-           forever waiting on a confirming SMS that will never arrive.
-        2. Reading the active SIM's carrier name to auto-select the Jio
-           123Pay IVR rail vs. the generic *99# USSD rail.
-      Without this permission both fall back safely: rail selection defaults
-      to the generic *99# USSD rail, and a payment attempt can still only
-      ever resolve via the SMS-confirmation path or the verification-window
-      timeout — the <5s-call-is-cancelled shortcut simply never fires.
-      Neither the honest-handoff guarantee nor the SMS-only SUCCESS rule
-      depends on this permission being granted.
-    -->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <!--
-      SYSTEM_ALERT_WINDOW was used for Scan & Pay's "payment in progress"
-      status card, drawn as a floating overlay on top of the native *99#
-      USSD popup. Removed after real-device testing: on several OEM Android
-      skins (confirmed on MIUI), having ANY draw-over-other-apps overlay on
-      screen makes the OS refuse to show the soft keyboard for the *99#
-      "Enter UPI ID" system dialog, as a deliberate anti-tapjacking/PIN-
-      capture protection — this fired regardless of the overlay's own focus
-      flags, purely because it was present at all. The status card is now a
-      plain ongoing notification (PaymentOverlayService) instead, which
-      carries the same information without ever drawing on top of the
-      dialer/USSD screen, so it can't trigger that protection. Nothing in
-      this app requests SYSTEM_ALERT_WINDOW anymore.
-    -->
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+    <!--
+      Android 11+ package visibility: lets Scan & Pay check that at least one
+      UPI app can handle a upi://pay link before handing the payment off.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upi" />
+        </intent>
+    </queries>
     <application
 
         android:allowBackup="true"
@@ -88,7 +67,9 @@
         </activity>
         <activity
             android:name=".ExpenseConfirmationActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:autoRemoveFromRecents="true"
+            android:excludeFromRecents="true" />
         <activity
             android:name=".ManualExpenseActivity"
             android:exported="false" />
@@ -98,9 +79,18 @@
         <activity
             android:name=".QrScanActivity"
             android:exported="false" />
-        <service
-            android:name=".PaymentOverlayService"
-            android:exported="false" />
+        <!-- Shares exported CSV files (Data export). grantUriPermissions
+             lets the chosen app read the one file we hand it; nothing else. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <receiver
             android:name=".SmsReceiver"
             android:exported="true">

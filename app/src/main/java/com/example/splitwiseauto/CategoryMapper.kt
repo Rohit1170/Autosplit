@@ -31,19 +31,26 @@ val expenseCategories = listOf(FOOD, TRAVEL, SHOPPING, BILLS, OTHER)
 fun categoryByName(name: String): Category =
     expenseCategories.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: OTHER
 
+// Keyword lists hoisted to top-level `val`s instead of being rebuilt inside
+// categorize() on every call. categorize() is called once per expense row
+// on every recomposition (including every row that scrolls into view for
+// the first time), so re-allocating these 4 lists + their 24 strings each
+// time was pure per-frame garbage during scrolling for no benefit — the
+// keyword sets never change at runtime.
+private val FOOD_KEYWORDS = listOf("food", "restaurant", "cafe", "corner", "kitchen", "zomato", "swiggy", "dine")
+private val TRAVEL_KEYWORDS = listOf("uber", "ola", "travel", "flight", "airline", "train", "irctc", "cab","rapido")
+private val SHOPPING_KEYWORDS = listOf("amazon", "flipkart", "myntra", "shop", "mall", "store")
+private val BILLS_KEYWORDS = listOf("electricity", "bill", "recharge", "broadband", "dth", "insurance")
+
 // Naive keyword-based categorizer. Good enough until Phase 8 (bank-specific parsers)
 // or a proper category field gets added to the Expense entity.
 fun categorize(merchant: String): Category {
     val m = merchant.lowercase()
     return when {
-        listOf("food", "restaurant", "cafe", "corner", "kitchen", "zomato", "swiggy", "dine")
-            .any { m.contains(it) } -> FOOD
-        listOf("uber", "ola", "travel", "flight", "airline", "train", "irctc", "cab")
-            .any { m.contains(it) } -> TRAVEL
-        listOf("amazon", "flipkart", "myntra", "shop", "mall", "store")
-            .any { m.contains(it) } -> SHOPPING
-        listOf("electricity", "bill", "recharge", "broadband", "dth", "insurance")
-            .any { m.contains(it) } -> BILLS
+        FOOD_KEYWORDS.any { m.contains(it) } -> FOOD
+        TRAVEL_KEYWORDS.any { m.contains(it) } -> TRAVEL
+        SHOPPING_KEYWORDS.any { m.contains(it) } -> SHOPPING
+        BILLS_KEYWORDS.any { m.contains(it) } -> BILLS
         else -> OTHER
     }
 }

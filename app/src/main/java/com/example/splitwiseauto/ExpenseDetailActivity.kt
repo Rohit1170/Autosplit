@@ -89,11 +89,13 @@ class ExpenseDetailActivity : ComponentActivity() {
             SplitWiseAutoTheme {
                 var expense by remember { mutableStateOf<Expense?>(null) }
                 var participants by remember { mutableStateOf<List<ExpenseParticipant>>(emptyList()) }
+                var linkedPayment by remember { mutableStateOf<PendingPayment?>(null) }
                 var loading by remember { mutableStateOf(true) }
 
                 LaunchedEffect(expenseId) {
                     expense = database.expenseDao().getExpenseById(expenseId)
                     participants = database.expenseParticipantDao().getParticipantsForExpense(expenseId)
+                    linkedPayment = database.pendingPaymentDao().findByBillId(expenseId.toString())
                     loading = false
                 }
 
@@ -105,6 +107,7 @@ class ExpenseDetailActivity : ComponentActivity() {
                         loading = loading,
                         expense = expense,
                         participants = participants,
+                        linkedPayment = linkedPayment,
                         onClose = { finish() },
                         onEdit = { current ->
                             startActivity(
@@ -134,6 +137,7 @@ private fun ExpenseDetailScreen(
     loading: Boolean,
     expense: Expense?,
     participants: List<ExpenseParticipant>,
+    linkedPayment: PendingPayment? = null,
     onClose: () -> Unit,
     onEdit: (Expense) -> Unit
 ) {
@@ -180,6 +184,7 @@ private fun ExpenseDetailScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     item { ExpenseSummaryCard(expense = expense) }
+                    linkedPayment?.let { payment -> item { ScanPayStatusCard(payment) } }
                     item { ExpenseLocationCard(expense = expense) }
                     item { ExpenseParticipantsCard(expense = expense, participants = participants) }
                     item { Spacer(modifier = Modifier.height(8.dp)) }
@@ -327,12 +332,6 @@ private fun ExpenseLocationCard(expense: Expense) {
                 val cameraPositionState = rememberCameraPositionState {
                     position = CameraPosition.fromLatLngZoom(markerPosition, 15f)
                 }
-                val accentIcon = remember(category.fgColor) {
-                    val hsv = FloatArray(3)
-                    android.graphics.Color.colorToHSV(category.fgColor.toArgb(), hsv)
-                    BitmapDescriptorFactory.defaultMarker(hsv[0])
-                }
-
                 GoogleMap(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -351,6 +350,19 @@ private fun ExpenseLocationCard(expense: Expense) {
                         myLocationButtonEnabled = false
                     )
                 ) {
+                    // Built INSIDE the GoogleMap content block on purpose.
+                    // BitmapDescriptorFactory only works after the Maps SDK
+                    // has initialized, which happens when a map first loads in
+                    // the app process. Creating the icon before GoogleMap(...)
+                    // (as this used to) crashed with "IBitmapDescriptorFactory
+                    // is not initialized" whenever this was the first map
+                    // opened since the app started, e.g. right after a fresh
+                    // launch, before visiting the Map tab.
+                    val accentIcon = remember(category.fgColor) {
+                        val hsv = FloatArray(3)
+                        android.graphics.Color.colorToHSV(category.fgColor.toArgb(), hsv)
+                        BitmapDescriptorFactory.defaultMarker(hsv[0])
+                    }
                     Marker(
                         state = MarkerState(position = markerPosition),
                         title = expense.merchant,
@@ -541,3 +553,49 @@ private const val DETAIL_DARK_MAP_STYLE_JSON = """
   {"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#5e8df2"}]}
 ]
 """
+
+
+/**
+ * Scan & Pay status for an expense that came from (or was paid through) Scan
+ * & Pay. For UNVERIFIED payments this carries the calm "couldn't verify"
+ * notice; it never says "bank confirmed" unless the SMS actually matched.
+ */
+@Composable
+private fun ScanPayStatusCard(payment: PendingPayment) {
+    val status = payment.statusEnum
+    val message = when (status) {
+        PendingPaymentStatus.CONFIRMED ->
+            payment.upiRef?.let { "Paid with Scan & Pay · Bank confirmed · UPI Ref $it" }
+                ?: "Paid with Scan & Pay · Bank confirmed"
+        PendingPaymentStatus.VERIFIED_PENDING ->
+            "Paid with Scan & Pay · confirming with your bank…"
+        PendingPaymentStatus.UNVERIFIED ->
+            "We couldn't verify this with your bank SMS — please double-check in your UPI app."
+        PendingPaymentStatus.PENDING ->
+            "Scan & Pay · waiting for bank confirmation…"
+        PendingPaymentStatus.UNCONFIRMED ->
+            "Couldn't confirm this payment. Check your bank SMS."
+        PendingPaymentStatus.FAILED ->
+            "Your UPI app reported this payment failed."
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = glassCardColor(),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        ),
+        border = BorderStroke(1.dp, glassBorderColor()),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            PaymentStatusChip(status)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}

@@ -15,9 +15,12 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadExpenses() {
         viewModelScope.launch {
-            _expensesWithLocation.value = database.expenseDao().getAllExpenses().filter {
-                it.latitude != null && it.longitude != null
-            }
+            // Same shared, Room-observed history Home/Insights/Friends use
+            // (ExpenseRepository) instead of this being its own separate
+            // full-table query on top of theirs.
+            _expensesWithLocation.value = ExpenseRepository.allExpenses(database.expenseDao())
+                .map { it.expense }
+                .filter { it.latitude != null && it.longitude != null }
         }
     }
 }

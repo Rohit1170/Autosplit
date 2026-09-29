@@ -41,7 +41,10 @@ import androidx.compose.ui.unit.dp
 fun PendingNotificationsDialog(
     pending: List<PendingExpenseNotification>,
     onDismiss: () -> Unit,
-    onDismissItem: (Int) -> Unit
+    onDismissItem: (Int) -> Unit,
+    // Recent Scan & Pay payments, each with its Pending / Confirmed /
+    // Unconfirmed status. Informational — tapping does nothing.
+    payments: List<PendingPayment> = emptyList()
 ) {
     val context = LocalContext.current
 
@@ -51,13 +54,35 @@ fun PendingNotificationsDialog(
             Text("Missed expenses")
         },
         text = {
-            if (pending.isEmpty()) {
+            if (pending.isEmpty() && payments.isEmpty()) {
                 Text("Nothing pending — you're all caught up.")
             } else {
                 LazyColumn(
                     modifier = Modifier.heightIn(max = 400.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    if (payments.isNotEmpty()) {
+                        item(key = "payments_header") {
+                            Text(
+                                text = "Scan & Pay payments",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        items(payments, key = { "payment_" + it.id }) { payment ->
+                            PendingPaymentRow(payment)
+                        }
+                        if (pending.isNotEmpty()) {
+                            item(key = "pending_header") {
+                                Text(
+                                    text = "To split",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 6.dp)
+                                )
+                            }
+                        }
+                    }
                     items(pending, key = { it.id }) { item ->
                         PendingNotificationRow(
                             item = item,

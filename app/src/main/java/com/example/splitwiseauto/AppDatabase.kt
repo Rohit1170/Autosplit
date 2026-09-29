@@ -17,9 +17,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Trip::class,
         SavedFilter::class,
         PaymentAttempt::class,
-        AccountName::class
+        AccountName::class,
+        PendingPayment::class
     ],
-    version = 11,
+    version = 13,
     // Turned on starting at v9->v10 only: this captures the schema going
     // forward (needed so the 9->10 migration test has a real v9 schema
     // JSON to build its "before" database from) without trying to
@@ -47,6 +48,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun savedFilterDao(): SavedFilterDao
 
     abstract fun paymentAttemptDao(): PaymentAttemptDao
+
+    abstract fun pendingPaymentDao(): PendingPaymentDao
 
     companion object {
 
@@ -228,6 +231,51 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // Purely additive: one new table for UPI-intent Scan & Pay payments
+        // (PendingPayment). No existing table, column, or row is touched —
+        // payment_attempts from the old *99# flow is left exactly as it is.
+        // Column types/nullability must match PendingPayment exactly for
+        // Room's schema validation.
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `pending_payments` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`billId` TEXT, " +
+                        "`amountMinor` INTEGER NOT NULL, " +
+                        "`payeeVpa` TEXT NOT NULL, " +
+                        "`payeeName` TEXT, " +
+                        "`initiatedAt` INTEGER NOT NULL, " +
+                        "`status` TEXT NOT NULL, " +
+                        "`upiRef` TEXT, " +
+                        "`confirmedAt` INTEGER, " +
+                        "PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
+        // Purely additive: no table, column, or row is touched — these just
+        // add SQLite indices on top of what's already there, so lookups by
+        // trip, date, expense, or person stop being full table scans as
+        // your expense history grows. Every expense, friend, and everything
+        // else already recorded stays exactly as it is.
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_expenses_tripId` ON `expenses` (`tripId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_expenses_timestampMillis` ON `expenses` (`timestampMillis`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_expense_participants_expenseId` ON `expense_participants` (`expenseId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_expense_participants_personName` ON `expense_participants` (`personName`)"
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -252,7 +300,9 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_7_8,
                         MIGRATION_8_9,
                         MIGRATION_9_10,
-                        MIGRATION_10_11
+                        MIGRATION_10_11,
+                        MIGRATION_11_12,
+                        MIGRATION_12_13
                     )
                     .build()
 

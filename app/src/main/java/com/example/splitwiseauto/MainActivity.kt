@@ -166,12 +166,22 @@ class MainActivity : ComponentActivity() {
 
         requestRequiredPermissions()
 
-        // Process-death safety: if the app was killed mid-payment (dialing,
-        // or waiting on a confirming SMS), any stale in-flight attempt gets
-        // reconciled to TIMEOUT here rather than sitting forever as
-        // IN_PROGRESS/WAITING_FOR_VERIFICATION with nothing left to resolve it.
+        // Initialize the Google Maps SDK once, up front. Without this the
+        // FIRST map shown in a fresh app process can throw
+        // "IBitmapDescriptorFactory is not initialized" (confirmed on the
+        // expense-detail map) — pre-initializing removes that timing race
+        // for every map in the app, including the Map tab's marker pills.
+        runCatching {
+            com.google.android.gms.maps.MapsInitializer.initialize(applicationContext)
+        }
+
+        // Scan & Pay: every 15 min, PENDING payments older than 30 min with no
+        // matching bank SMS become UNCONFIRMED (idempotent — KEEP policy).
+        // Also run one pass now, so a payment that went stale while the app
+        // wasn't running is shown correctly straight away.
+        PendingPaymentTimeoutWorker.schedule(this)
         lifecycleScope.launch {
-            PaymentSessionManager.reconcileOnStart(this@MainActivity)
+            PendingPaymentTimeoutWorker.markTimedOut(this@MainActivity)
         }
 
         setContent {
@@ -524,8 +534,17 @@ private fun knownMerchantKeyword(message: String): String? =
     }
 
 private fun extractMerchant(message: String): String {
-    val balanceMerchant = Regex(
-        """(?:bal(?:ance)?\s*(?:rs\.?|inr|₹)\s*[\d,]+(?:\.\d{1,2})?\s+)(.+?)\s+credited\b""",
+    // "NAME credited" — the receiver's name in the "payee credited" style
+    // used by ICICI, IDBI, SBI and most UPI apps. Handles BOTH the form with
+    // a balance before the name ("...; Bal Rs 9335.81 CP CORNER FOOD
+    // credited") and, crucially, the far more common form WITHOUT one
+    // ("...on 07-Sep-26; John Doe credited") — that second case used to fall
+    // through to "Unknown". The optional balance prefix is stripped so only
+    // the actual name is captured. Anchored so it can't reach across a
+    // sentence/segment boundary (';' and 'Rs' aren't in the name class).
+    val creditedMerchant = Regex(
+        """(?:bal(?:ance)?\s*(?:rs\.?|inr|₹)?\s*[\d,]+(?:\.\d{1,2})?\s+)?""" +
+            """([a-z][a-z0-9 .&'_-]{1,40}?)\s+credited\b""",
         RegexOption.IGNORE_CASE
     ).find(message)?.groupValues?.getOrNull(1)
 
@@ -535,7 +554,7 @@ private fun extractMerchant(message: String): String {
     // since card/POS messages often say "...to your X Bank Card... at
     // MERCHANT on DATE" — an earlier "at" can belong to unrelated text.
     val stopLookahead =
-        """(?=\s*(?:\.(?!\d)|;|$|\bon\s+\d|\bupi\b|\bref\b|\btxn\b|\bavl\b|\bbal\b|\binfo\b|\bnot\s+you\b|\bnever\s+share\b))"""
+        """(?=\s*(?:\.(?!\d)|;|$|\bon\s+\d|\bupi\b|\bref|\brrn\b|\butr\b|\btxn\b|\btrf\b|\bvia\b|\bavl\b|\bbal\b|\binfo\b|\bnot\s+you\b|\bnever\s+share\b|\bcredited\b))"""
     val atMerchant = Regex(
         """\bat\s+(.+?)$stopLookahead""",
         RegexOption.IGNORE_CASE
@@ -567,7 +586,7 @@ private fun extractMerchant(message: String): String {
             it.replace(Regex("[^0-9]"), "").length >= 6
     }
 
-    val candidate = knownMerchantKeyword(message) ?: balanceMerchant ?: atMerchant ?: vpaMerchant ?: toMerchant
+    val candidate = knownMerchantKeyword(message) ?: creditedMerchant ?: atMerchant ?: vpaMerchant ?: toMerchant
     return candidate
         ?.trim()
         ?.trim('/', '-')

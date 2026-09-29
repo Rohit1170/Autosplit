@@ -19,7 +19,7 @@ interface PaymentAttemptDao {
     /**
      * Unconditional status write — used for forward transitions
      * (INITIATING -> IN_PROGRESS -> WAITING_FOR_VERIFICATION -> ...) that
-     * only [PaymentSessionManager] ever drives, one attempt at a time.
+     * only the retired *99# flow ever drove (legacy; no new rows are created).
      */
     @Query("UPDATE payment_attempts SET status = :newStatus WHERE id = :id")
     suspend fun setStatus(id: Int, newStatus: String)

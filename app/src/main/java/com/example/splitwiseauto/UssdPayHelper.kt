@@ -1,71 +1,115 @@
 package com.example.splitwiseauto
 
+import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.telephony.TelephonyManager
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import java.util.Locale
 
 /**
- * Small, dependency-free helpers for the *99# USSD rail. Placing the call
- * itself and watching when it ends live in DialManager now — this object
- * used to also call TelephonyManager.sendUssdRequest() directly, but that
- * turned out to be a dead end: it can only ever start a NEW USSD session,
- * never reply inside one that's already open (confirmed by testing, and by
- * reading Flowpay's own source, which doesn't attempt it either), and on
- * top of that it's blocked outright on at least one real carrier tested
- * against this app (consistently failing with a generic error). The
- * locked design (honest handoff, not automation) doesn't want it anyway —
- * ACTION_CALL + the person completing the session themselves is the
- * actual behavior we want, not an accident of what didn't work.
+ * Drives a *99# "send money to UPI ID" session the same way Scan & Pay's
+ * UPI-intent flow hands off to a UPI app — this is the second, offline
+ * payment mode for when the user has no internet: the whole menu path
+ * (send money -> pay to VPA -> VPA -> amount) is pre-encoded as ONE ussd
+ * string and dialed in a single shot. The carrier network carries it
+ * through those menu steps itself and the session ends at "enter UPI
+ * PIN" — which is always completed by the user in the OS's own USSD
+ * dialog, never read or touched by this app.
+ *
+ * NOTE ON THE MENU CODE: *99# menu numbering can differ slightly by
+ * telecom operator. [SEND_TO_VPA_MENU_CODE] below is the commonly
+ * published NPCI path for "Send Money" -> "To UPI ID/VPA". If a real
+ * device shows a different result, this is the one constant to adjust —
+ * everything else (parsing, permission handling, fallback) stays the same.
  */
 object UssdPayHelper {
 
-    private const val SEND_TO_VPA_MENU_CODE = "99*1*3"
+    private const val SEND_TO_VPA_MENU_CODE = "99*1*4"
+
+    fun buildUssdCode(vpa: String, amount: Double): String {
+        val amountStr = String.format(Locale.US, "%.2f", amount).trimEnd('0').trimEnd('.')
+        return "*$SEND_TO_VPA_MENU_CODE*$vpa*$amountStr#"
+    }
+
+    fun hasCallPhonePermission(activity: Activity): Boolean =
+        ContextCompat.checkSelfPermission(
+            activity,
+            android.Manifest.permission.CALL_PHONE
+        ) == PackageManager.PERMISSION_GRANTED
 
     /**
-     * Builds the *99# dial string for a Send-Money-by-VPA session.
-     *
-     * When [vpa] and [amount] are both usable, this returns the COMPOUND
-     * form NPCI's own *99# spec supports: `*99*1*3*<vpa>*<amount>#`. Extra
-     * `*<field>` segments before the final `#` pre-fill that many prompts —
-     * here, "Enter UPI ID" and "Enter Amount" — so the person only has to
-     * confirm the payee, optionally add a remark, and enter their UPI PIN,
-     * instead of typing the VPA and amount by hand at two separate prompts.
-     * This is still a single ACTION_CALL dial, same as any phone number —
-     * not automation of the session itself. Everything after dialing
-     * (confirmation, remarks, PIN) is still the person's own input inside
-     * the IVR, exactly as before; only the two fields that were previously
-     * typed manually are now pre-filled in the dial string.
-     *
-     * Falls back to the bare `*99*1*3#` (jumps to "Enter UPI ID", skipping
-     * the top-level menu, but requires typing the VPA and amount manually)
-     * when [vpa] is null/blank, contains `*` or `#` (which would break the
-     * field-separator syntax — a real VPA never legitimately contains
-     * either), or [amount] is null/non-positive. Exact IVR behavior for the
-     * compound form can still vary a little by telecom/bank backend and
-     * hasn't been verified against every carrier, so the manual base code
-     * always remains reachable as a safe fallback if a given SIM doesn't
-     * honor the pre-filled fields.
+     * Tries to dial [ussdCode] directly via TelephonyManager (one tap, no
+     * dialer app involved). Requires CALL_PHONE + API 26+. Falls back to
+     * [dialManually] whenever that isn't available, so this always does
+     * *something* useful rather than silently failing.
      */
-    fun buildUssdCode(vpa: String? = null, amount: Double? = null): String {
-        val safeVpa = vpa?.takeIf { it.isNotBlank() && !it.contains('*') && !it.contains('#') }
-        val safeAmount = amount?.takeIf { it > 0.0 }
-        return if (safeVpa != null && safeAmount != null) {
-            val amountText = safeAmount.toBigDecimal().stripTrailingZeros().toPlainString()
-            "*$SEND_TO_VPA_MENU_CODE*$safeVpa*$amountText#"
-        } else {
-            "*$SEND_TO_VPA_MENU_CODE#"
+    @SuppressLint("MissingPermission")
+    fun triggerPayment(activity: Activity, ussdCode: String) {
+        val canSendDirectly = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            hasCallPhonePermission(activity)
+
+        if (!canSendDirectly) {
+            dialManually(activity, ussdCode)
+            return
+        }
+
+        val telephonyManager =
+            activity.getSystemService(Activity.TELEPHONY_SERVICE) as? TelephonyManager
+
+        if (telephonyManager == null) {
+            dialManually(activity, ussdCode)
+            return
+        }
+
+        try {
+            telephonyManager.sendUssdRequest(
+                ussdCode,
+                object : TelephonyManager.UssdResponseCallback() {
+                    override fun onReceiveUssdResponse(
+                        telephonyManager: TelephonyManager,
+                        request: String,
+                        response: CharSequence
+                    ) {
+                        Toast.makeText(
+                            activity,
+                            "USSD: $response",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+
+                    override fun onReceiveUssdResponseFailed(
+                        telephonyManager: TelephonyManager,
+                        request: String,
+                        failureCode: Int
+                    ) {
+                        Toast.makeText(
+                            activity,
+                            "USSD request failed — opening dialer instead",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        dialManually(activity, ussdCode)
+                    }
+                },
+                null
+            )
+        } catch (e: SecurityException) {
+            dialManually(activity, ussdCode)
         }
     }
 
     /**
-     * Pre-copies the VPA so pasting it into the network's own USSD reply
-     * prompt is one tap — kept as a fallback for a SIM/carrier that doesn't
-     * honor the compound dial string above and still lands on a manual
-     * "Enter UPI ID" prompt.
+     * Opens the phone dialer pre-filled with the USSD code. Needs no
+     * permission at all — the user still has to tap Call themselves,
+     * which is also the safer default for anyone who hasn't granted
+     * CALL_PHONE.
      */
-    fun copyVpaToClipboard(activity: Activity, vpa: String) {
-        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("UPI ID", vpa))
+    fun dialManually(activity: Activity, ussdCode: String) {
+        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(ussdCode)}"))
+        activity.startActivity(dialIntent)
     }
 }

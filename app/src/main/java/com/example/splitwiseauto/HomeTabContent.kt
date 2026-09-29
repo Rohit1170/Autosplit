@@ -38,6 +38,15 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -83,6 +92,7 @@ fun HomeScreen(
     val accountSpending by homeViewModel.accountSpending.collectAsState()
     val mapExpenses by mapViewModel.expensesWithLocation.collectAsState()
     val pendingNotifications by pendingNotificationsViewModel.pending.collectAsState()
+    val recentPayments by pendingNotificationsViewModel.payments.collectAsState()
     val settlementHistory by friendViewModel.settlementHistory.collectAsState()
     var showAddFriendDialog by remember {
         mutableStateOf(false)
@@ -340,7 +350,8 @@ fun HomeScreen(
         PendingNotificationsDialog(
             pending = pendingNotifications,
             onDismiss = { showPendingNotifications = false },
-            onDismissItem = { id -> pendingNotificationsViewModel.dismiss(id) }
+            onDismissItem = { id -> pendingNotificationsViewModel.dismiss(id) },
+            payments = recentPayments
         )
     }
     if (showTripPicker) {
@@ -641,7 +652,11 @@ fun HomeScreen(
                 }
 
                 Surface(
-                    onClick = { showPendingNotifications = true },
+                    onClick = {
+                        // Refresh first so Scan & Pay statuses are current.
+                        pendingNotificationsViewModel.refresh()
+                        showPendingNotifications = true
+                    },
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
@@ -675,6 +690,14 @@ fun HomeScreen(
             // for a tab-switch swipe (the map needs the whole gesture to itself);
             // it's still reachable by swiping in from Friends or Insights, or by
             // tapping its bottom-bar icon.
+            // Every tab gets the SAME spacing: the header row above already
+            // reserves the status-bar inset, so pages only need clearance
+            // for the bottom nav bar. (Pages used to get the full
+            // paddingValues, which added the status-bar gap a second time
+            // below the bell row.) Each tab then starts its content
+            // TAB_CONTENT_TOP_GAP below the header, so all four line up.
+            val tabPageModifier = Modifier.padding(bottom = paddingValues.calculateBottomPadding())
+
             HorizontalPager(
                 pageCount = 4,
                 state = pagerState,
@@ -713,7 +736,7 @@ fun HomeScreen(
                                 participantFilter = ParticipantFilter.ALL
                                 selectedFriendNames = emptySet()
                             },
-                            modifier = Modifier.padding(paddingValues)
+                            modifier = tabPageModifier
                         )
                     }
 
@@ -727,21 +750,22 @@ fun HomeScreen(
                             // Double-tap is the fast path straight to settling up;
                             // long-press keeps the full menu (settle/history/rename/remove).
                             onFriendDoubleTap = { friendForActions = it },
-                            modifier = Modifier.padding(paddingValues)
+                            modifier = tabPageModifier
                         )
                     }
 
                     2 -> {
                         ExpenseMapScreen(
                             expenses = mapExpenses,
-                            modifier = Modifier.padding(paddingValues)
+                            active = pagerState.currentPage == 2,
+                            modifier = tabPageModifier
                         )
                     }
 
                     3 -> {
                         InsightsScreen(
                             viewModel = insightsViewModel,
-                            modifier = Modifier.padding(paddingValues)
+                            modifier = tabPageModifier
                         )
                     }
                 }
@@ -781,28 +805,54 @@ private fun HomeTabContent(
         .filter { it != "All time" && it != "Everyone" }
         .joinToString(" · ")
 
-    // Entrance-only staggered rise/fade — hero -> balance cards -> Accounts
-    // -> category tiles -> recent expenses, 75ms apart. Gated on HomeEntrance
-    // .hasPlayed (see its definition) so this plays once per app open, not
-    // on every revisit of the Home tab within the same session, and is
-    // skipped outright when the system's animator duration scale is 0.
-    val animationsEnabled = rememberAnimationsEnabled()
-    val playEntrance = animationsEnabled && !HomeEntrance.hasPlayed
-    val heroRiseProgress = remember { Animatable(if (playEntrance) 0f else 1f) }
-    val balanceRiseProgress = remember { Animatable(if (playEntrance) 0f else 1f) }
-    val accountsRiseProgress = remember { Animatable(if (playEntrance) 0f else 1f) }
-    val categoriesRiseProgress = remember { Animatable(if (playEntrance) 0f else 1f) }
-    val expensesRiseProgress = remember { Animatable(if (playEntrance) 0f else 1f) }
-    LaunchedEffect(Unit) {
-        if (!playEntrance) return@LaunchedEffect
-        HomeEntrance.hasPlayed = true
-        val stagger = 75
-        launch { heroRiseProgress.animateTo(1f, tween(600, 0 * stagger, EntranceEasing)) }
-        launch { balanceRiseProgress.animateTo(1f, tween(600, 1 * stagger, EntranceEasing)) }
-        launch { accountsRiseProgress.animateTo(1f, tween(600, 2 * stagger, EntranceEasing)) }
-        launch { categoriesRiseProgress.animateTo(1f, tween(600, 3 * stagger, EntranceEasing)) }
-        launch { expensesRiseProgress.animateTo(1f, tween(600, 4 * stagger, EntranceEasing)) }
+    // Recent-expenses search + paging. Search matches merchant, bank,
+    // category, UPI/ref, date text, account, who it was split with, and the
+    // amount. Results are newest-first by actual transaction time, grouped
+    // under month bars, and shown RECENT_PAGE_SIZE at a time. All derived
+    // lists are remembered, so scrolling never recomputes them.
+    var searchOpen by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    val searchFocus = remember { FocusRequester() }
+    val searchedExpenses = remember(expenses, searchQuery) {
+        val q = searchQuery.trim()
+        val matched = if (q.isEmpty()) expenses else expenses.filter { it.matchesSearch(q) }
+        // Stable sort: expenses with no timestamp keep their original
+        // newest-added-first order and sink below the dated ones.
+        matched.sortedByDescending { it.expense.timestampMillis ?: Long.MIN_VALUE }
     }
+    val monthTotals = remember(searchedExpenses) {
+        searchedExpenses
+            .groupBy { recentMonthKeyOf(it) }
+            .mapValues { (_, items) -> items.sumOf { it.expense.amount } }
+    }
+    // Back to the first page whenever the search text changes. Not keyed on
+    // the list itself, so deleting a row or resuming the app doesn't
+    // collapse what you'd already expanded.
+    var visibleCount by remember(searchQuery) { mutableStateOf(RECENT_PAGE_SIZE) }
+    val visibleEntries = remember(searchedExpenses, visibleCount, monthTotals) {
+        buildRecentEntries(searchedExpenses.take(visibleCount), monthTotals)
+    }
+
+    // Entrance rise/fade animation removed. Profiling a real slow frame
+    // (Android Studio Profiler, System Trace) showed this staggered
+    // animation — hero -> balance cards -> Accounts -> category tiles ->
+    // recent expenses — was the actual dominant cost on the main thread
+    // right after Home first composes: it was recomposing every one of
+    // those elements, including every visible expense row, on every
+    // animation frame for up to ~900ms (5 staggered 600ms tweens). It was
+    // never actually visible to the user (masked by the very jank it was
+    // causing), so it was pure wasted work with zero payoff. Every element
+    // below now renders at its final resting position/opacity immediately.
+    // entranceRiseFade() and these progress values are left in place below
+    // (always at 1f = fully visible, no offset) purely so the call sites
+    // that reference them don't all need touching — they're permanent
+    // no-ops now, not animations.
+    val playEntrance = false
+    val heroRiseProgress = remember { Animatable(1f) }
+    val balanceRiseProgress = remember { Animatable(1f) }
+    val accountsRiseProgress = remember { Animatable(1f) }
+    val categoriesRiseProgress = remember { Animatable(1f) }
+    val expensesRiseProgress = remember { Animatable(1f) }
 
     LazyColumn(
         modifier = modifier
@@ -810,7 +860,7 @@ private fun HomeTabContent(
             .padding(horizontal = 16.dp),
 
         contentPadding = PaddingValues(
-            top = 16.dp,
+            top = TAB_CONTENT_TOP_GAP,
             // Extra room at the bottom so the last card never sits under the
             // stacked Scan & Pay / Add Expense FABs on this tab.
             bottom = 104.dp
@@ -914,8 +964,8 @@ private fun HomeTabContent(
         }
 
 
-        // Recent expenses heading + filter
-        item {
+        // Recent expenses heading + search + filter
+        item(key = "recent_header") {
             Column(modifier = Modifier.entranceRiseFade { expensesRiseProgress.value }) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -927,15 +977,111 @@ private fun HomeTabContent(
                         style = MaterialTheme.typography.titleMedium
                     )
 
-                    IconButton(onClick = onFilterClick) {
-                        Icon(
-                            imageVector = Icons.Filled.FilterList,
-                            contentDescription = "Filter expenses",
-                            tint = if (filterActive) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = {
+                            if (searchOpen) searchQuery = ""
+                            searchOpen = !searchOpen
+                        }) {
+                            Icon(
+                                imageVector = Icons.Filled.Search,
+                                contentDescription = "Search expenses",
+                                tint = if (searchOpen || searchQuery.isNotBlank()) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                        IconButton(onClick = onFilterClick) {
+                            Icon(
+                                imageVector = Icons.Filled.FilterList,
+                                contentDescription = "Filter expenses",
+                                tint = if (filterActive) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (searchOpen) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    // Compact 40dp pill instead of the 56dp OutlinedTextField,
+                    // styled like the expense rows below it.
+                    val focusManager = LocalFocusManager.current
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp),
+                        shape = RoundedCornerShape(50),
+                        color = HomeTokens.card2(),
+                        border = BorderStroke(1.dp, HomeTokens.line())
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Search,
+                                contentDescription = null,
+                                tint = HomeTokens.mut(),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier.weight(1f),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                if (searchQuery.isEmpty()) {
+                                    Text(
+                                        text = "Search merchant, amount, friend…",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = HomeTokens.mut(),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                BasicTextField(
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
+                                    singleLine = true,
+                                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    ),
+                                    cursorBrush = SolidColor(HomeTokens.accent()),
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                    keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .focusRequester(searchFocus)
+                                )
                             }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "Close search",
+                                tint = HomeTokens.mut(),
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .clickable {
+                                        searchQuery = ""
+                                        searchOpen = false
+                                    }
+                            )
+                        }
+                    }
+                    // Focus the field (opening the keyboard) as soon as it
+                    // appears. runCatching: if the item gets scrolled away
+                    // before focus lands, skipping it is fine.
+                    LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
+                    if (searchQuery.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (searchedExpenses.size == 1) "1 match" else "${searchedExpenses.size} matches",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = HomeTokens.mut()
                         )
                     }
                 }
@@ -982,28 +1128,73 @@ private fun HomeTabContent(
                 }
             }
 
+        } else if (searchedExpenses.isEmpty()) {
+
+            item(key = "recent_no_matches") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No matches for \"${searchQuery.trim()}\"",
+                        color = HomeTokens.mut()
+                    )
+                }
+            }
+
         } else {
 
-            // Expense list — rises/fades in as one group with the "Recent
-            // Expenses" heading above (all rows share the same progress
-            // value; not staggered row-by-row, since that group can be long).
+            // Newest-first, grouped under GPay-style month bars (month name +
+            // that month's total), showing RECENT_PAGE_SIZE rows at a time.
             items(
-                items = expenses,
-                key = { item ->
-                    item.expense.id
+                items = visibleEntries,
+                key = { entry ->
+                    when (entry) {
+                        is RecentEntry.MonthBar ->
+                            entry.month?.let { "bar_${it.year}_${it.month}" } ?: "bar_undated"
+                        is RecentEntry.Item -> entry.item.expense.id
+                    }
+                },
+                contentType = { entry ->
+                    when (entry) {
+                        is RecentEntry.MonthBar -> "month_bar"
+                        is RecentEntry.Item -> "expense_row"
+                    }
                 }
-            ) { item ->
+            ) { entry ->
+                when (entry) {
+                    is RecentEntry.MonthBar -> MonthSpendBar(month = entry.month, total = entry.total)
+                    is RecentEntry.Item -> {
+                        HomeExpenseRow(
+                            item = entry.item,
+                            onTap = { onExpenseTap(entry.item) },
+                            onLongPress = { onExpenseLongPress(entry.item) }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+            }
 
-                HomeExpenseRow(
-                    item = item,
-                    onTap = { onExpenseTap(item) },
-                    onLongPress = { onExpenseLongPress(item) },
-                    modifier = Modifier.entranceRiseFade { expensesRiseProgress.value }
-                )
-
-                Spacer(
-                    modifier = Modifier.height(8.dp)
-                )
+            if (searchedExpenses.size > visibleCount) {
+                item(key = "recent_show_more") {
+                    val remaining = searchedExpenses.size - visibleCount
+                    OutlinedButton(
+                        onClick = { visibleCount += RECENT_PAGE_SIZE },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = null
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Show ${minOf(remaining, RECENT_PAGE_SIZE)} more · $remaining left")
+                    }
+                }
             }
         }
     }
@@ -1112,24 +1303,9 @@ private fun HomeHeroCard(
 ) {
     val accent = HomeTokens.accent()
 
-    // Counts up from ₹0 only when the caller says this is a genuine entrance
-    // (HomeEntrance.hasPlayed was still false for this app process) — a
-    // later legitimate change to `amount` (e.g. a filter narrowing the
-    // total) snaps straight to the new value instead of re-playing the
-    // count-up, since that's not "the app opening" anymore.
-    val displayedAmount = remember { Animatable(if (animateEntrance) 0f else amount.toFloat()) }
-    var hasPlayedEntrance by remember { mutableStateOf(!animateEntrance) }
-    LaunchedEffect(amount) {
-        if (!hasPlayedEntrance) {
-            hasPlayedEntrance = true
-            displayedAmount.animateTo(
-                targetValue = amount.toFloat(),
-                animationSpec = tween(durationMillis = 1200, easing = EntranceEasing)
-            )
-        } else {
-            displayedAmount.snapTo(amount.toFloat())
-        }
-    }
+    // No count-up animation — the amount just shows immediately, including
+    // on the app's first open (animateEntrance is now unused but kept as a
+    // parameter so callers don't need to change).
 
     Box(
         modifier = modifier
@@ -1153,7 +1329,7 @@ private fun HomeHeroCard(
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = formatRupeeIndian(displayedAmount.value.toDouble()),
+                text = formatRupeeIndian(amount),
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Black,
                 color = HomeTokens.onAccent()
@@ -1275,6 +1451,105 @@ private fun AccountCarouselCard(
  * a date line and a SPLIT badge when the expense has more than one
  * participant, on the new card2/hairline token surface.
  */
+/**
+ * Gap between the shared Main/bell header row and the first thing on each
+ * tab. Home, Friends, Insights and Map all use this one value so every tab
+ * starts at exactly the same height.
+ */
+internal val TAB_CONTENT_TOP_GAP = 12.dp
+
+private const val RECENT_PAGE_SIZE = 15
+
+/** One line of the Recent Expenses list: a month bar or an expense row. */
+private sealed interface RecentEntry {
+    data class MonthBar(val month: MonthKey?, val total: Double) : RecentEntry
+    data class Item(val item: ExpenseWithParticipants) : RecentEntry
+}
+
+/** Calendar month an expense belongs to; null for (old) undated expenses. */
+private fun recentMonthKeyOf(item: ExpenseWithParticipants): MonthKey? =
+    item.expense.timestampMillis?.let { MonthKey.fromMillis(it) }
+
+/**
+ * Interleaves a month bar before the first row of each month. [monthTotals]
+ * covers every matching expense, not just the visible page, so a bar always
+ * shows the month's full total even when only part of it is expanded.
+ */
+private fun buildRecentEntries(
+    visible: List<ExpenseWithParticipants>,
+    monthTotals: Map<MonthKey?, Double>
+): List<RecentEntry> {
+    val entries = ArrayList<RecentEntry>(visible.size + 4)
+    var isFirst = true
+    var currentMonth: MonthKey? = null
+    for (item in visible) {
+        val month = recentMonthKeyOf(item)
+        if (isFirst || month != currentMonth) {
+            entries += RecentEntry.MonthBar(month, monthTotals[month] ?: 0.0)
+            currentMonth = month
+            isFirst = false
+        }
+        entries += RecentEntry.Item(item)
+    }
+    return entries
+}
+
+private fun ExpenseWithParticipants.matchesSearch(query: String): Boolean {
+    val q = query.lowercase()
+    val e = expense
+    // "500" should find ₹500.00, and "499.5" should find ₹499.50.
+    val amountText = if (e.amount % 1.0 == 0.0) {
+        e.amount.toLong().toString()
+    } else {
+        String.format(Locale.US, "%.2f", e.amount)
+    }
+    return e.merchant.lowercase().contains(q) ||
+            e.bank.lowercase().contains(q) ||
+            e.category.lowercase().contains(q) ||
+            e.upi.lowercase().contains(q) ||
+            e.date.lowercase().contains(q) ||
+            (e.accountIdentifier?.lowercase()?.contains(q) == true) ||
+            amountText.contains(q) ||
+            participants.any { it.personName.lowercase().contains(q) }
+}
+
+/** "October" for this year, "October 2025" for older years. */
+private fun monthBarLabel(month: MonthKey?): String {
+    if (month == null) return "Undated"
+    val pattern = if (month.year == MonthKey.current().year) "MMMM" else "MMMM yyyy"
+    return SimpleDateFormat(pattern, Locale.US).format(month.monthStartCalendar().time)
+}
+
+/** GPay-style month strip: month name on the left, that month's total on the right. */
+@Composable
+private fun MonthSpendBar(month: MonthKey?, total: Double) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(HomeTokens.accentSoft())
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = monthBarLabel(month),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = HomeTokens.accent(),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "${formatRupeeIndian(total)} spent",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
 @Composable
 private fun HomeExpenseRow(
     item: ExpenseWithParticipants,
@@ -1282,7 +1557,14 @@ private fun HomeExpenseRow(
     onLongPress: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val category = categorize(item.expense.merchant)
+    // Use the expense's own saved category, not a fresh merchant-keyword
+    // guess — this row used to call categorize(item.expense.merchant),
+    // which silently ignored any category the user had actually edited
+    // (or that categorize() would guess differently today than it did
+    // when the expense was first saved), so this row's icon/color could
+    // drift out of sync with the real category shown in "By category"
+    // above (which correctly reads expense.category).
+    val category = categoryByName(item.expense.category)
     val darkTheme = isSystemInDarkTheme()
     val iconBackground = if (darkTheme) category.fgColor.copy(alpha = 0.24f) else category.bgColor
     val isSplit = item.participants.size > 1
