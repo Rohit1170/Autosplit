@@ -243,6 +243,12 @@ class QrScanActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        // Keep the home-screen widget in step with anything changed here.
+        SplitleeWidget.requestUpdate(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         inFlightPaymentId = savedInstanceState?.getString(STATE_IN_FLIGHT_ID)
@@ -988,10 +994,10 @@ private fun CameraPermissionState(
                 Icon(imageVector = Icons.Filled.Close, contentDescription = "Close")
             }
         }
-        if (!denied) {
-            // Waiting on the system permission dialog.
-            return@Column
-        }
+        // Nothing below the close button while the system permission dialog
+        // is up. (No early return: Compose compiler 1.4.3 corrupts its group
+        // stack on return@Column from an inline lambda.)
+        if (denied) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -1050,6 +1056,7 @@ private fun CameraPermissionState(
             TextButton(onClick = onRequestCamera, modifier = Modifier.padding(top = 4.dp)) {
                 Text("Ask again")
             }
+        }
         }
     }
 }
@@ -1528,8 +1535,7 @@ private fun PaymentStatusScreen(
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-            return@Column
-        }
+        } else {
 
         val status = current.statusEnum
         val style = statusStyle(status)
@@ -1718,6 +1724,7 @@ private fun PaymentStatusScreen(
                 }
                 else -> PrimaryAction("Done", onClick = onDone)
             }
+        }
         }
     }
 }

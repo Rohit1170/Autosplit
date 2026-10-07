@@ -18,9 +18,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SavedFilter::class,
         PaymentAttempt::class,
         AccountName::class,
-        PendingPayment::class
+        PendingPayment::class,
+        MerchantCategory::class
     ],
-    version = 13,
+    version = 14,
     // Turned on starting at v9->v10 only: this captures the schema going
     // forward (needed so the 9->10 migration test has a real v9 schema
     // JSON to build its "before" database from) without trying to
@@ -50,6 +51,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun paymentAttemptDao(): PaymentAttemptDao
 
     abstract fun pendingPaymentDao(): PendingPaymentDao
+
+    abstract fun merchantCategoryDao(): MerchantCategoryDao
 
     companion object {
 
@@ -276,6 +279,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // Purely additive: creates the learned merchant -> category table.
+        // No existing table, column or row is touched. SQL matches the
+        // MerchantCategory entity exactly (Room validates it on open).
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `merchant_category_map` (" +
+                        "`merchant_key` TEXT NOT NULL, " +
+                        "`category` TEXT NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`merchant_key`))"
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -302,7 +320,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_9_10,
                         MIGRATION_10_11,
                         MIGRATION_11_12,
-                        MIGRATION_12_13
+                        MIGRATION_12_13,
+                        MIGRATION_13_14
                     )
                     .build()
 

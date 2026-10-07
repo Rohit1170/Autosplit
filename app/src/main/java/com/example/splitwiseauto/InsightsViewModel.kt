@@ -2,6 +2,7 @@ package com.example.splitwiseauto
 
 import android.app.Application
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.AndroidViewModel
@@ -54,7 +55,17 @@ data class SpendTrendUiState(
     val hasAnyDatedExpenses: Boolean = true,
     // Count of dated expenses that fall in the selected month — backs the
     // "txns" stat in the 3-stat row (daily avg / biggest day / txns).
-    val transactionCount: Int = 0
+    val transactionCount: Int = 0,
+    // Regular (non-trip) spending per elapsed day. Trips are left out so one
+    // weekend away doesn't inflate it. (Trip mode: the trip's own average.)
+    val dailyAverage: Double = 0.0,
+    // Trip spending this month that the average/projection leave out, and a
+    // label for it ("Goa trip", "2 trips"). 0/null when there is none.
+    val excludedTripSpend: Double = 0.0,
+    val excludedTripLabel: String? = null,
+    // Current month in Main mode, but no regular spending to project from.
+    val notEnoughToProject: Boolean = false,
+    val isTripMode: Boolean = false
 )
 
 class InsightsViewModel(application: Application) : AndroidViewModel(application) {
@@ -91,6 +102,12 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
 
     private val _categoryBreakdown = MutableStateFlow<List<CategorySummary>>(emptyList())
     val categoryBreakdown: StateFlow<List<CategorySummary>> = _categoryBreakdown
+
+    // Main mode only, and only when the month has trip spending: the same
+    // month total split by location (Main vs each trip). A separate list from
+    // the category breakdown so no list ever mixes two dimensions.
+    private val _locationBreakdown = MutableStateFlow<List<CategorySummary>>(emptyList())
+    val locationBreakdown: StateFlow<List<CategorySummary>> = _locationBreakdown
 
     /** null = still loading; false = no expenses at all yet (fresh install). */
     private val _hasAnyExpenses = MutableStateFlow<Boolean?>(null)
@@ -147,43 +164,48 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
             MonthKey.fromMillis(millis) == month
         }
 
-        val monthTotal = expensesInMonth.sumOf { it.expense.amount }
-
-        val categoryRows = expensesInMonth
+        // ONE dimension per list. "Where it went" = categories across every
+        // location (trips included), so its rows add up to the month total
+        // and its percentages to 100%. It used to append one row per trip
+        // ("Goa 87%") on top of the category rows, double-counting the trip
+        // spending (rows summed to 186%).
+        val byCategory = expensesInMonth
             .groupBy { categoryByName(it.expense.category) }
-            .map { (category, items) ->
-                val sum = items.sumOf { it.expense.amount }
-                val percent = if (monthTotal > 0) ((sum / monthTotal) * 100).toInt() else 0
-                CategorySummary(category, sum, percent)
-            }
+            .map { (category, items) -> category to items.sumOf { it.expense.amount } }
+            .sortedByDescending { it.second }
+        val categoryPercents = InsightsMath.percents(byCategory.map { it.second })
+        _categoryBreakdown.value = byCategory.mapIndexed { i, (category, sum) ->
+            CategorySummary(category, sum, categoryPercents[i])
+        }
 
-        // Main mode only: one extra row per trip, so a trip's spending shows
-        // up alongside Food/Bills/Travel/etc. without touching Trip mode's
-        // own (unchanged) breakdown.
-        val tripRows = if (currentTripId == null) {
-            expensesInMonth
-                .filter { it.expense.tripId != null }
+        // "By location": Main (no trip) vs each trip — Main mode only, and
+        // only if this month actually has trip spending.
+        _locationBreakdown.value = if (currentTripId == null &&
+            expensesInMonth.any { it.expense.tripId != null }
+        ) {
+            val byLocation = expensesInMonth
                 .groupBy { it.expense.tripId }
-                .mapNotNull { (tripId, items) ->
-                    val tripName = tripNamesById[tripId] ?: return@mapNotNull null
-                    val sum = items.sumOf { it.expense.amount }
-                    val percent = if (monthTotal > 0) ((sum / monthTotal) * 100).toInt() else 0
-                    CategorySummary(
-                        category = Category(
-                            name = tripName,
+                .map { (tripId, items) ->
+                    val location = if (tripId == null) {
+                        Category("Main", Icons.Filled.Home, Color(0xFFDCF7EC), Color(0xFF14A87C))
+                    } else {
+                        Category(
+                            name = tripNamesById[tripId] ?: "Trip",
                             icon = Icons.Filled.Place,
                             bgColor = Color(0xFFDDEBFF),
                             fgColor = Color(0xFF3B82F6)
-                        ),
-                        total = sum,
-                        percent = percent
-                    )
+                        )
+                    }
+                    location to items.sumOf { it.expense.amount }
                 }
+                .sortedByDescending { it.second }
+            val locationPercents = InsightsMath.percents(byLocation.map { it.second })
+            byLocation.mapIndexed { i, (location, sum) ->
+                CategorySummary(location, sum, locationPercents[i])
+            }
         } else {
             emptyList()
         }
-
-        _categoryBreakdown.value = (categoryRows + tripRows).sortedByDescending { it.total }
     }
 
     private fun recomputeSpendTrend() {
@@ -216,11 +238,35 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
             MonthKey.fromMillis(millis) == month
         }
 
-        val projectedMonthEnd = if (isCurrentMonth && daysElapsed > 0) {
-            (totalSoFar / daysElapsed) * daysInMonth
-        } else {
-            null
+        // Pace + daily average use REGULAR spending only (Main mode): a trip
+        // is a one-off, so including it predicted absurd months (one Goa
+        // weekend -> "on pace for ₹2,00,987"). "Biggest day" and the chart
+        // above still show the raw days, trips included.
+        val isTripMode = currentTripId != null
+        val tripSpendInMonth = if (isTripMode) 0.0 else allExpenses.sumOf { item ->
+            val millis = item.expense.timestampMillis ?: return@sumOf 0.0
+            if (item.expense.tripId == null || MonthKey.fromMillis(millis) != month) return@sumOf 0.0
+            val dayOfMonth = Calendar.getInstance().apply { timeInMillis = millis }
+                .get(Calendar.DAY_OF_MONTH)
+            if (dayOfMonth in 1..daysElapsed) item.expense.amount else 0.0
         }
+        val tripIdsInMonth = if (isTripMode) emptySet() else allExpenses.mapNotNull { item ->
+            val millis = item.expense.timestampMillis ?: return@mapNotNull null
+            item.expense.tripId?.takeIf { MonthKey.fromMillis(millis) == month }
+        }.toSet()
+        val excludedTripLabel = when {
+            tripSpendInMonth <= 0.0 -> null
+            tripIdsInMonth.size == 1 -> tripNamesById[tripIdsInMonth.first()]?.let { "$it trip" } ?: "a trip"
+            else -> "${tripIdsInMonth.size} trips"
+        }
+
+        val pace = if (isTripMode) {
+            // Viewing a trip: its own average, and no month-end prediction.
+            InsightsMath.Pace(if (daysElapsed > 0) totalSoFar / daysElapsed else 0.0, null)
+        } else {
+            InsightsMath.pace(totalSoFar - tripSpendInMonth, daysElapsed, daysInMonth, isCurrentMonth)
+        }
+        val projectedMonthEnd = pace.projectedMonthEnd
 
         // Compared over the same number of elapsed days in the previous month,
         // so a mid-month reading isn't measured against a full previous month.
@@ -247,7 +293,12 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
             dailyPoints = dailyTotals.toList(),
             projectedMonthEnd = projectedMonthEnd,
             hasAnyDatedExpenses = hasAnyDated,
-            transactionCount = transactionCount
+            transactionCount = transactionCount,
+            dailyAverage = pace.dailyAverage,
+            excludedTripSpend = tripSpendInMonth,
+            excludedTripLabel = excludedTripLabel,
+            notEnoughToProject = !isTripMode && isCurrentMonth && projectedMonthEnd == null,
+            isTripMode = isTripMode
         )
     }
 }

@@ -161,6 +161,12 @@ class MainActivity : ComponentActivity() {
     }
 
 
+    override fun onStop() {
+        super.onStop()
+        // Keep the home-screen widget in step with anything changed here.
+        SplitleeWidget.requestUpdate(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 

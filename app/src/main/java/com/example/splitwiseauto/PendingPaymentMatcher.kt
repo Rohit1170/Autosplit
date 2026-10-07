@@ -194,6 +194,7 @@ object PendingPaymentMatcher {
 
         // Never silent: tell the user the bank confirmed it — and loudly if
         // the UPI app had reported this payment as failed.
+        SplitleeWidget.requestUpdate(context)
         showPaymentConfirmedNotification(
             context,
             payee = payment.payeeName ?: payment.payeeVpa,

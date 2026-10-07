@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Splitlee</string>
+    <string name="widget_description">This month\'s spending and who owes whom, with quick Scan &amp; Pay and Add expense.</string>
 </resources>

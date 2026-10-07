@@ -62,6 +62,11 @@ import kotlin.math.abs
 
 class ExpenseConfirmationActivity : ComponentActivity() {
 
+    companion object {
+        /** Set by ManualExpenseActivity when the user picked/changed the category by hand. */
+        const val EXTRA_LEARN_CATEGORY = "learnCategory"
+    }
+
     private lateinit var database: AppDatabase
 
     private var amount: Double = 0.0
@@ -81,6 +86,12 @@ class ExpenseConfirmationActivity : ComponentActivity() {
     private var tripId: Int? = null
     private var source: String? = null
     private var paymentAttemptId: Int? = null
+
+    override fun onStop() {
+        super.onStop()
+        // Keep the home-screen widget in step with anything changed here.
+        SplitleeWidget.requestUpdate(this)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -198,6 +209,18 @@ class ExpenseConfirmationActivity : ComponentActivity() {
     ) {
 
         lifecycleScope.launch {
+
+            // Merchant -> category: a NEW expense whose category nobody chose
+            // (the SMS / notification path) asks the learned map first, then
+            // the built-in merchant map, then the old keyword guess. When the
+            // user picked the category by hand (Manual/Edit screen), remember
+            // it for this merchant. Existing expenses are never re-categorised.
+            if (editingExpenseId == null && !intent.hasExtra("category")) {
+                category = MerchantCategorizer.resolve(this@ExpenseConfirmationActivity, merchant)
+            }
+            if (intent.getBooleanExtra(EXTRA_LEARN_CATEGORY, false)) {
+                MerchantCategorizer.learn(this@ExpenseConfirmationActivity, merchant, category)
+            }
 
             /*
              * First save the expense.

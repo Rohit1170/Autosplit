@@ -65,6 +65,12 @@ class ManualExpenseActivity : ComponentActivity() {
     private var editingBank: String? = null
     private var editingAccountIdentifier: String? = null
 
+    override fun onStop() {
+        super.onStop()
+        // Keep the home-screen widget in step with anything changed here.
+        SplitleeWidget.requestUpdate(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         editingExpenseId = intent.getIntExtra("expenseId", -1).takeIf { it > 0 }
@@ -87,8 +93,13 @@ class ManualExpenseActivity : ComponentActivity() {
                         initialTimestampMillis = initialTimestampMillis,
                         isEditing = editingExpenseId != null,
                         onCancel = ::finish,
-                        onContinue = { amount, merchant, date, category, payer, timestampMillis ->
-                            openSplitConfirmation(amount, merchant, date, category, payer, timestampMillis)
+                        onContinue = { amount, merchant, date, category, payer, timestampMillis, pickedByUser ->
+                            val original = intent.getStringExtra("category")
+                            // Learn only from a real choice: a tap on a category
+                            // for a new expense, or an actual change when editing.
+                            val learn = pickedByUser &&
+                                (editingExpenseId == null || !category.equals(original, ignoreCase = true))
+                            openSplitConfirmation(amount, merchant, date, category, payer, timestampMillis, learn)
                         }
                     )
                 }
@@ -102,7 +113,8 @@ class ManualExpenseActivity : ComponentActivity() {
         date: String,
         category: String,
         payer: String,
-        timestampMillis: Long
+        timestampMillis: Long,
+        learnCategory: Boolean
     ) {
         lifecycleScope.launch {
             // Only stamp a fresh location for a brand-new expense. Editing an
@@ -125,6 +137,7 @@ class ManualExpenseActivity : ComponentActivity() {
                 putExtra("upi", "Manual")
                 putExtra("balance", "Unknown")
                 putExtra("category", category)
+                putExtra(ExpenseConfirmationActivity.EXTRA_LEARN_CATEGORY, learnCategory)
                 putExtra("payer", payer)
                 putExtra("timestampMillis", timestampMillis)
                 editingAccountIdentifier?.let { putExtra("accountIdentifier", it) }
@@ -151,7 +164,7 @@ private fun ManualExpenseScreen(
     initialTimestampMillis: Long?,
     isEditing: Boolean,
     onCancel: () -> Unit,
-    onContinue: (Double, String, String, String, String, Long) -> Unit
+    onContinue: (Double, String, String, String, String, Long, Boolean) -> Unit
 ) {
     var amountText by remember { mutableStateOf(initialAmount) }
     var merchant by remember { mutableStateOf(initialMerchant) }
@@ -168,6 +181,8 @@ private fun ManualExpenseScreen(
         mutableStateOf(initialCategory ?: categorize(initialMerchant).name)
     }
     var categoryChosenManually by remember { mutableStateOf(initialCategory != null) }
+    // True only after the user actually taps a category (drives learning).
+    var categoryTappedByUser by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
     var payer by remember { mutableStateOf(initialPayer) }
     var showPayerPicker by remember { mutableStateOf(false) }
@@ -334,38 +349,29 @@ private fun ManualExpenseScreen(
                         )
 
                         Text("Category", style = MaterialTheme.typography.titleSmall)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            expenseCategories.take(3).forEach { category ->
-                                CategoryOption(
-                                    category = category,
-                                    selected = selectedCategory == category.name,
-                                    onClick = {
-                                        selectedCategory = category.name
-                                        categoryChosenManually = true
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                )
+                        // Rows of 3 (7 categories now: Groceries and
+                        // Entertainment were added); empty slots keep widths even.
+                        expenseCategories.chunked(3).forEach { rowCategories ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                rowCategories.forEach { category ->
+                                    CategoryOption(
+                                        category = category,
+                                        selected = selectedCategory == category.name,
+                                        onClick = {
+                                            selectedCategory = category.name
+                                            categoryChosenManually = true
+                                            categoryTappedByUser = true
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                repeat(3 - rowCategories.size) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
                             }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            expenseCategories.drop(3).forEach { category ->
-                                CategoryOption(
-                                    category = category,
-                                    selected = selectedCategory == category.name,
-                                    onClick = {
-                                        selectedCategory = category.name
-                                        categoryChosenManually = true
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            Spacer(modifier = Modifier.weight(1f))
                         }
                     }
                 }
@@ -441,7 +447,8 @@ private fun ManualExpenseScreen(
                             cleanDate,
                             selectedCategory,
                             payer,
-                            dateMillis
+                            dateMillis,
+                            categoryTappedByUser
                         )
                     },
                     modifier = Modifier.fillMaxWidth().height(56.dp),
@@ -522,6 +529,7 @@ private fun CategoryOption(
                 text = category.name,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelMedium,
                 color = if (selected) category.fgColor else MaterialTheme.colorScheme.onSurfaceVariant
             )

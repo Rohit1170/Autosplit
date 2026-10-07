@@ -61,10 +61,7 @@ fun PendingNotificationsDialog(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 24.dp)
             )
-            return@AppSheet
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        } else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (pending.isNotEmpty()) {
                 SectionLabel("To split")
                 pending.forEach { item ->

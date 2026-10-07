@@ -142,14 +142,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val grandTotal = data.sumOf { it.expense.amount }
             _totalSpent.value = grandTotal
 
-            _categorySummaries.value = data
+            // One dimension only (category) — checked: no trip/location rows
+            // are mixed in here. The treemap shows at most 6 tiles, so with
+            // more categories the smallest ones are folded into "Other";
+            // percentages use largest-remainder rounding so tiles total 100%.
+            val byCategory = data
                 .groupBy { categoryByName(it.expense.category) }
-                .map { (category, shares) ->
-                    val sum = shares.sumOf { it.expense.amount }
-                    val percent = if (grandTotal > 0) ((sum / grandTotal) * 100).toInt() else 0
-                    CategorySummary(category, sum, percent)
-                }
-                .sortedByDescending { it.total }
+                .map { (category, shares) -> category to shares.sumOf { it.expense.amount } }
+                .sortedByDescending { it.second }
+            val tiles = if (byCategory.size <= TREEMAP_MAX_TILES) byCategory else {
+                val keep = byCategory.filter { it.first != OTHER }.take(TREEMAP_MAX_TILES - 1)
+                val folded = byCategory.filterNot { it in keep }.sumOf { it.second }
+                (keep + (OTHER to folded)).sortedByDescending { it.second }
+            }
+            val tilePercents = InsightsMath.percents(tiles.map { it.second })
+            _categorySummaries.value = tiles.mapIndexed { i, (category, sum) ->
+                CategorySummary(category, sum, tilePercents[i])
+            }
 
             _accountSpending.value = data
                 .map { it.expense }
@@ -174,3 +183,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 }
+
+/** TreemapView renders 1 primary + 2 tall + 3 compact tiles. */
+private const val TREEMAP_MAX_TILES = 6

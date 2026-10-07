@@ -68,6 +68,7 @@ fun InsightsScreen(
     val availableMonths by viewModel.availableMonths.collectAsState()
     val trend by viewModel.spendTrend.collectAsState()
     val categoryBreakdown by viewModel.categoryBreakdown.collectAsState()
+    val locationBreakdown by viewModel.locationBreakdown.collectAsState()
     val hasAnyExpenses by viewModel.hasAnyExpenses.collectAsState()
 
     // Fresh install / no data: never touch the trend chart or breakdown.
@@ -123,6 +124,18 @@ fun InsightsScreen(
 
         item {
             CategoryBreakdownCard(items = categoryBreakdown)
+        }
+
+        // Same month total split by location — its own list, never mixed
+        // into the category rows above (that mix is what summed to 186%).
+        if (locationBreakdown.isNotEmpty()) {
+            item {
+                CategoryBreakdownCard(
+                    items = locationBreakdown,
+                    title = "By location",
+                    emptyText = ""
+                )
+            }
         }
     }
 }
@@ -256,8 +269,7 @@ private fun SpendTrendCard(trend: SpendTrendUiState) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                return@Column
-            }
+            } else {
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -271,23 +283,38 @@ private fun SpendTrendCard(trend: SpendTrendUiState) {
             Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = trend.projectedMonthEnd?.let { projected ->
-                    "On pace for ~${formatRupees(projected)} by month end"
-                } ?: "Total for ${trend.monthLabel}",
+                text = when {
+                    trend.projectedMonthEnd != null ->
+                        "On pace for ~${formatRupees(trend.projectedMonthEnd)} by month end"
+                    // No ₹0 "prediction": say why there's no projection.
+                    trend.notEnoughToProject -> "Not enough regular spending to project yet"
+                    else -> "Total for ${trend.monthLabel}"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (trend.excludedTripSpend > 0.0 && trend.excludedTripLabel != null) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Excludes ${formatRupees(trend.excludedTripSpend)} ${trend.excludedTripLabel}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                )
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             SpendStatsRow(trend = trend)
+            }
         }
     }
 }
 
 @Composable
 private fun SpendStatsRow(trend: SpendTrendUiState) {
-    val dailyAvg = if (trend.dailyPoints.isNotEmpty()) trend.totalSoFar / trend.dailyPoints.size else 0.0
+    // Daily avg excludes trip spending (see InsightsViewModel); biggest day
+    // stays a raw fact, trips included.
+    val dailyAvg = trend.dailyAverage
     val biggestDay = trend.dailyPoints.maxOrNull() ?: 0.0
 
     Row(
@@ -405,7 +432,11 @@ private fun SpendTrendChart(
 }
 
 @Composable
-private fun CategoryBreakdownCard(items: List<CategorySummary>) {
+private fun CategoryBreakdownCard(
+    items: List<CategorySummary>,
+    title: String = "Where it went",
+    emptyText: String = "No expenses yet this month — category breakdown will appear as expenses come in."
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -418,7 +449,7 @@ private fun CategoryBreakdownCard(items: List<CategorySummary>) {
         Column(modifier = Modifier.padding(18.dp)) {
 
             Text(
-                text = "Where it went",
+                text = title,
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -427,7 +458,7 @@ private fun CategoryBreakdownCard(items: List<CategorySummary>) {
 
             if (items.isEmpty()) {
                 Text(
-                    text = "No expenses yet this month — category breakdown will appear as expenses come in.",
+                    text = emptyText,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

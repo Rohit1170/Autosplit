@@ -2,6 +2,8 @@ package com.example.splitwiseauto
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Flight
+import androidx.compose.material.icons.filled.LocalGroceryStore
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
@@ -25,8 +27,12 @@ val TRAVEL = Category("Travel", Icons.Filled.Flight, Color(0xFFE1E9FB), Color(0x
 val SHOPPING = Category("Shopping", Icons.Filled.ShoppingBag, Color(0xFFEEE5FC), Color(0xFFA37FF0))
 val BILLS = Category("Bills", Icons.Filled.Receipt, Color(0xFFDCF7EC), Color(0xFF2FD39A))
 val OTHER = Category("Other", Icons.Filled.MoreHoriz, Color(0xFFFCEBD3), Color(0xFFF0A63C))
+// Added for the merchant map (Blinkit/Zepto/DMart, BookMyShow/Netflix…).
+// Additive: existing expenses keep whatever category they already have.
+val GROCERIES = Category("Groceries", Icons.Filled.LocalGroceryStore, Color(0xFFDDF3F5), Color(0xFF3FB6C2))
+val ENTERTAINMENT = Category("Entertainment", Icons.Filled.Movie, Color(0xFFFBE3F0), Color(0xFFE56BAE))
 
-val expenseCategories = listOf(FOOD, TRAVEL, SHOPPING, BILLS, OTHER)
+val expenseCategories = listOf(FOOD, GROCERIES, TRAVEL, SHOPPING, BILLS, ENTERTAINMENT, OTHER)
 
 fun categoryByName(name: String): Category =
     expenseCategories.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: OTHER

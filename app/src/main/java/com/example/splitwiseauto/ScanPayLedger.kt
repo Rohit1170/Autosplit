@@ -68,7 +68,7 @@ object ScanPayLedger {
                 // reference identifies this expense (see attachBankDetails).
                 upi = payment.upiRef?.takeIf { it.length == 12 } ?: payment.id,
                 payer = "Me",
-                category = categorize(merchant).name,
+                category = MerchantCategorizer.resolve(context, merchant),
                 accountIdentifier = accountIdentifier,
                 latitude = location?.latitude,
                 longitude = location?.longitude,
