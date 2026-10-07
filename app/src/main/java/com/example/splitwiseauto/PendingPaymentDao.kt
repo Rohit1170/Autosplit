@@ -18,6 +18,24 @@ interface PendingPaymentDao {
     )
     suspend fun getPending(): List<PendingPayment>
 
+    /** Payments the UPI app (or the user) marked FAILED since [sinceMillis]. */
+    @Query("SELECT * FROM pending_payments WHERE status = 'FAILED' AND initiatedAt >= :sinceMillis")
+    suspend fun getFailedSince(sinceMillis: Long): List<PendingPayment>
+
+    /**
+     * Payments that still need the user's attention, for the bell list:
+     * waiting on SMS, or resolved without a bank SMS.
+     */
+    @Query(
+        "SELECT * FROM pending_payments WHERE status IN " +
+            "('PENDING', 'VERIFIED_PENDING', 'UNCONFIRMED', 'UNVERIFIED') ORDER BY initiatedAt DESC"
+    )
+    suspend fun getNeedingAttention(): List<PendingPayment>
+
+    /** Removes a payment the user dismissed from the bell list. Never used on CONFIRMED rows. */
+    @Query("DELETE FROM pending_payments WHERE id = :id AND status != 'CONFIRMED'")
+    suspend fun deleteUnconfirmed(id: String): Int
+
     @Query("SELECT * FROM pending_payments WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): PendingPayment?
 

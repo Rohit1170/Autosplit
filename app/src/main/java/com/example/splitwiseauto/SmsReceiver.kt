@@ -42,83 +42,19 @@ class SmsReceiver : BroadcastReceiver() {
             return
         }
 
-        // Send the reconstructed, full SMS to our existing parser
-        val transaction = parseBankSms(
-            sms = smsBody,
-            sender = sender,
-            receivedAtMillis = receivedAtMillis
-        )
-
-        // goAsync so the database work below can finish after onReceive
-        // returns. The raw SMS body is only ever held in memory here — only
-        // parsed, structured fields are persisted.
+        // goAsync so the database work can finish after onReceive returns.
+        // The raw SMS body is only ever held in memory — only parsed,
+        // structured fields are persisted. All routing lives in SmsIngestion.
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val debit = transaction?.takeIf { it.type == "DEBIT" } ?: return@launch
-
-                // A redelivered copy of the same SMS is ignored — checked
-                // BEFORE payment matching so a repeat can't fall through to
-                // the generic flow and create a second pending expense.
-                if (isDuplicateSms(context, sender, smsBody)) return@launch
-
-                // Scan & Pay matcher runs FIRST. If this debit belongs to a
-                // pending Scan & Pay payment (exact UPI ref, or same amount
-                // within 15 minutes), the matcher marks it CONFIRMED and links
-                // it to its expense/bill — and this SMS must NOT also go
-                // through the generic flow below, or the user would be asked
-                // to split a payment that's already assigned.
-                val handledByPaymentMatcher =
-                    PendingPaymentMatcher.tryConfirm(context, debit, smsBody, receivedAtMillis)
-                if (handledByPaymentMatcher) return@launch
-
-                // Not a Scan & Pay payment: normal flow (queue + split prompt).
-                Log.d(
-                    "SMS_RECEIVER",
-                    "Transaction detected: ₹${debit.amount} at ${debit.merchant}"
-                )
-
-                val database = AppDatabase.getDatabase(context)
-                val location = LocationHelper.getCurrentLocation(context)
-                val withLocation = debit.copy(
-                    latitude = location?.latitude,
-                    longitude = location?.longitude
-                )
-
-                // Persisted the moment it's detected — before the system notification
-                // even shows — so if the user swipes that notification away without
-                // tapping it, this expense is still recoverable from inside the app.
-                val pendingId = database.pendingExpenseNotificationDao().insert(
-                    PendingExpenseNotification(
-                        amount = withLocation.amount,
-                        merchant = withLocation.merchant,
-                        bank = withLocation.bank,
-                        date = withLocation.date,
-                        balance = withLocation.balance,
-                        upi = withLocation.upi,
-                        accountIdentifier = withLocation.accountIdentifier,
-                        latitude = withLocation.latitude,
-                        longitude = withLocation.longitude,
-                        timestampMillis = withLocation.receivedAtMillis
-                    )
-                ).toInt()
-
-                showExpenseNotification(context, withLocation, pendingId)
+                SmsIngestion.process(context, sender, smsBody, receivedAtMillis)
             } catch (e: Exception) {
-                // Never let one bad SMS crash the receiver; log type only,
-                // never the message text.
+                // Never let one bad SMS crash the receiver; type only, never text.
                 Log.e("SMS_RECEIVER", "Failed to process SMS: ${e.javaClass.simpleName}")
             } finally {
                 pendingResult.finish()
             }
         }
-    }
-
-    private fun isDuplicateSms(context: Context, sender: String?, body: String): Boolean {
-        val key = "sms_${(sender.orEmpty() + body).hashCode()}"
-        val prefs = context.getSharedPreferences("processed_sms", Context.MODE_PRIVATE)
-        if (prefs.contains(key)) return true
-        prefs.edit().putLong(key, System.currentTimeMillis()).apply()
-        return false
     }
 }

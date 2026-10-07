@@ -9,23 +9,28 @@ import kotlinx.coroutines.launch
 
 class PendingNotificationsViewModel(application: Application) : AndroidViewModel(application) {
 
-    private companion object {
-        const val RECENT_PAYMENTS = 5
-    }
-
     private val db = AppDatabase.getDatabase(application)
 
     private val _pending = MutableStateFlow<List<PendingExpenseNotification>>(emptyList())
     val pending: StateFlow<List<PendingExpenseNotification>> = _pending
 
-    // Most recent Scan & Pay payments, for the status list in the dialog.
+    // Scan & Pay payments that still need attention (waiting, or never
+    // confirmed by a bank SMS). Confirmed and failed ones are not listed.
     private val _payments = MutableStateFlow<List<PendingPayment>>(emptyList())
     val payments: StateFlow<List<PendingPayment>> = _payments
 
     fun refresh() {
         viewModelScope.launch {
             _pending.value = db.pendingExpenseNotificationDao().getAll()
-            _payments.value = db.pendingPaymentDao().getRecent(RECENT_PAYMENTS)
+            _payments.value = db.pendingPaymentDao().getNeedingAttention()
+        }
+    }
+
+    /** Removes a never-confirmed Scan & Pay payment from the list. */
+    fun dismissPayment(id: String) {
+        viewModelScope.launch {
+            db.pendingPaymentDao().deleteUnconfirmed(id)
+            refresh()
         }
     }
 

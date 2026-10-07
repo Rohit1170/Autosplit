@@ -191,6 +191,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Pick up bank SMS the receiver missed (battery saver / autostart
+        // rules can block it while the app is in the background).
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { SmsIngestion.catchUpFromInbox(applicationContext) }
+        }
+    }
+
 
     private fun requestRequiredPermissions() {
 

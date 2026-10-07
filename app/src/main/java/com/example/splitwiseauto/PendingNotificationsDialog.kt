@@ -42,81 +42,140 @@ fun PendingNotificationsDialog(
     pending: List<PendingExpenseNotification>,
     onDismiss: () -> Unit,
     onDismissItem: (Int) -> Unit,
-    // Recent Scan & Pay payments, each with its Pending / Confirmed /
-    // Unconfirmed status. Informational — tapping does nothing.
-    payments: List<PendingPayment> = emptyList()
+    // Scan & Pay payments that still need attention. Tap opens the payment's
+    // status screen (check SMS again / mark as paid); × removes it.
+    payments: List<PendingPayment> = emptyList(),
+    onDismissPayment: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("Missed expenses")
-        },
-        text = {
-            if (pending.isEmpty() && payments.isEmpty()) {
-                Text("Nothing pending — you're all caught up.")
-            } else {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 400.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    if (payments.isNotEmpty()) {
-                        item(key = "payments_header") {
-                            Text(
-                                text = "Scan & Pay payments",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        items(payments, key = { "payment_" + it.id }) { payment ->
-                            PendingPaymentRow(payment)
-                        }
-                        if (pending.isNotEmpty()) {
-                            item(key = "pending_header") {
-                                Text(
-                                    text = "To split",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(top = 6.dp)
-                                )
+    AppSheet(
+        title = "Missed expenses",
+        onDismiss = onDismiss,
+        trailing = { TextButton(onClick = onDismiss) { Text("Close") } }
+    ) {
+        if (pending.isEmpty() && payments.isEmpty()) {
+            Text(
+                text = "Nothing pending — you're all caught up.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 24.dp)
+            )
+            return@AppSheet
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (pending.isNotEmpty()) {
+                SectionLabel("To split")
+                pending.forEach { item ->
+                    PendingNotificationRow(
+                        item = item,
+                        onReview = {
+                            val intent = Intent(context, ExpenseConfirmationActivity::class.java).apply {
+                                putExtra("amount", item.amount)
+                                putExtra("merchant", item.merchant)
+                                putExtra("bank", item.bank)
+                                putExtra("date", item.date)
+                                putExtra("balance", item.balance)
+                                putExtra("upi", item.upi)
+                                item.accountIdentifier?.let { putExtra("accountIdentifier", it) }
+                                item.latitude?.let { putExtra("latitude", it) }
+                                item.longitude?.let { putExtra("longitude", it) }
+                                putExtra("timestampMillis", item.timestampMillis)
+                                putExtra("pendingNotificationId", item.id)
+                                item.source?.let { putExtra("source", it) }
+                                item.paymentAttemptId?.let { putExtra("paymentAttemptId", it) }
                             }
-                        }
-                    }
-                    items(pending, key = { it.id }) { item ->
-                        PendingNotificationRow(
-                            item = item,
-                            onReview = {
-                                val intent = Intent(context, ExpenseConfirmationActivity::class.java).apply {
-                                    putExtra("amount", item.amount)
-                                    putExtra("merchant", item.merchant)
-                                    putExtra("bank", item.bank)
-                                    putExtra("date", item.date)
-                                    putExtra("balance", item.balance)
-                                    putExtra("upi", item.upi)
-                                    item.accountIdentifier?.let { putExtra("accountIdentifier", it) }
-                                    item.latitude?.let { putExtra("latitude", it) }
-                                    item.longitude?.let { putExtra("longitude", it) }
-                                    putExtra("timestampMillis", item.timestampMillis)
-                                    putExtra("pendingNotificationId", item.id)
-                                    item.source?.let { putExtra("source", it) }
-                                    item.paymentAttemptId?.let { putExtra("paymentAttemptId", it) }
-                                }
-                                context.startActivity(intent)
-                                onDismiss()
-                            },
-                            onDismiss = { onDismissItem(item.id) }
-                        )
-                    }
+                            context.startActivity(intent)
+                            onDismiss()
+                        },
+                        onDismiss = { onDismissItem(item.id) }
+                    )
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
+
+            if (payments.isNotEmpty()) {
+                SectionLabel("Scan & Pay — not confirmed by bank", topPadding = if (pending.isNotEmpty()) 8 else 0)
+                payments.forEach { payment ->
+                    PaymentAttentionRow(
+                        payment = payment,
+                        onOpen = {
+                            context.startActivity(
+                                Intent(context, QrScanActivity::class.java)
+                                    .putExtra(QrScanActivity.EXTRA_PAYMENT_ID, payment.id)
+                            )
+                            onDismiss()
+                        },
+                        onRemove = { onDismissPayment(payment.id) }
+                    )
+                }
+                Text(
+                    text = "Tap one to check your SMS again or mark it as paid. × removes it if no money left your account.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String, topPadding: Int = 0) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = topPadding.dp)
     )
+}
+
+@Composable
+private fun PaymentAttentionRow(payment: PendingPayment, onOpen: () -> Unit, onRemove: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                // Name gets the full width; the status chip sits on the line
+                // below instead of squeezing the name ("MASAL GANESH NA…").
+                Text(
+                    text = payment.payeeName ?: payment.payeeVpa,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.size(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "${formatRupeeIndian(payment.amountMinor / 100.0)} · " +
+                            java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.getDefault())
+                                .format(java.util.Date(payment.initiatedAt)),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    PaymentStatusChip(payment.statusEnum)
+                }
+            }
+            IconButton(onClick = onRemove) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Remove",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
 }
 
 @Composable

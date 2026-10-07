@@ -78,6 +78,15 @@ object PendingPaymentMatcher {
                     it.initiatedAt <= receivedAtMillis + CLOCK_SKEW_MILLIS
             }
             .minByOrNull { it.initiatedAt }
+            // The UPI app said "failed" but the bank debited the same amount
+            // within the window: the bank wins. (Seen with GPay: it reports a
+            // failure, yet the debit SMS arrives moments later.)
+            ?: dao.getFailedSince(receivedAtMillis - FALLBACK_WINDOW_MILLIS)
+                .filter {
+                    it.amountMinor == smsAmountMinor &&
+                        it.initiatedAt <= receivedAtMillis + CLOCK_SKEW_MILLIS
+                }
+                .minByOrNull { it.initiatedAt }
             ?: return false
 
         return confirm(context, fallback, transaction, smsRef, receivedAtMillis)
@@ -182,6 +191,15 @@ object PendingPaymentMatcher {
             }
         }
         Log.d(TAG, "Payment ${payment.id} confirmed by bank SMS")
+
+        // Never silent: tell the user the bank confirmed it — and loudly if
+        // the UPI app had reported this payment as failed.
+        showPaymentConfirmedNotification(
+            context,
+            payee = payment.payeeName ?: payment.payeeVpa,
+            amountMinor = payment.amountMinor,
+            appSaidFailed = payment.statusEnum == PendingPaymentStatus.FAILED
+        )
 
         ScanPayLedger.attachBankDetails(
             context,

@@ -113,3 +113,55 @@ fun showExpenseNotification(
             notification
         )
 }
+
+
+/**
+ * Posted when a bank debit SMS confirms a Scan & Pay payment. The expense is
+ * already saved (no split prompt), so tapping just opens the app.
+ */
+fun showPaymentConfirmedNotification(
+    context: Context,
+    payee: String,
+    amountMinor: Long,
+    appSaidFailed: Boolean
+) {
+    val channelId = "expense_channel"
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (manager.getNotificationChannel(channelId) == null) {
+            manager.createNotificationChannel(
+                NotificationChannel(channelId, "Expense Notifications", NotificationManager.IMPORTANCE_HIGH)
+            )
+        }
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+        != PackageManager.PERMISSION_GRANTED
+    ) return
+
+    val amount = formatRupeeIndian(amountMinor / 100.0)
+    val title = if (appSaidFailed) "Money was debited: $amount to $payee" else "Paid $amount to $payee"
+    val text = if (appSaidFailed) {
+        "Your UPI app said this payment failed, but your bank SMS shows the debit. It's saved as an expense."
+    } else {
+        "Confirmed by your bank SMS · saved as an expense."
+    }
+    val open = PendingIntent.getActivity(
+        context,
+        0,
+        Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+    val notification = NotificationCompat.Builder(context, channelId)
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setContentTitle(title)
+        .setContentText(text)
+        .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setAutoCancel(true)
+        .setContentIntent(open)
+        .build()
+    runCatching {
+        NotificationManagerCompat.from(context).notify(System.currentTimeMillis().toInt(), notification)
+    }
+}

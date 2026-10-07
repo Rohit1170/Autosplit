@@ -175,6 +175,8 @@ class QrScanActivity : ComponentActivity() {
         const val EXTRA_BILL_LABEL = "billLabel"
         const val EXTRA_BILL_AMOUNT = "billAmount"
         const val EXTRA_BILL_NOTE = "billNote"
+        /** Open straight on an existing payment's status screen (from the bell list). */
+        const val EXTRA_PAYMENT_ID = "paymentId"
 
         private const val STATE_IN_FLIGHT_ID = "inFlightPaymentId"
         private const val STATE_UPI_APP_NAME = "upiAppName"
@@ -244,6 +246,7 @@ class QrScanActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         inFlightPaymentId = savedInstanceState?.getString(STATE_IN_FLIGHT_ID)
+            ?: intent.getStringExtra(EXTRA_PAYMENT_ID)
         upiAppName = savedInstanceState?.getString(STATE_UPI_APP_NAME)
         paidViaUssd = savedInstanceState?.getBoolean(STATE_VIA_USSD) ?: false
         ussdCopiedVpa = savedInstanceState?.getBoolean(STATE_COPIED_VPA) ?: false

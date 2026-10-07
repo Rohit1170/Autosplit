@@ -358,7 +358,8 @@ fun HomeScreen(
             pending = pendingNotifications,
             onDismiss = { showPendingNotifications = false },
             onDismissItem = { id -> pendingNotificationsViewModel.dismiss(id) },
-            payments = recentPayments
+            payments = recentPayments,
+            onDismissPayment = { id -> pendingNotificationsViewModel.dismissPayment(id) }
         )
     }
     if (showTripPicker) {
@@ -658,31 +659,34 @@ fun HomeScreen(
                     }
                 }
 
-                Surface(
-                    onClick = {
-                        // Refresh first so Scan & Pay statuses are current.
-                        pendingNotificationsViewModel.refresh()
-                        showPendingNotifications = true
-                    },
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Box(
-                        modifier = Modifier.padding(8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        BadgedBox(
-                            badge = {
-                                if (pendingNotifications.isNotEmpty()) {
-                                    Badge {
-                                        Text(pendingNotifications.size.toString())
-                                    }
-                                }
+                // The badge wraps the whole round button (not the icon inside
+                // it): inside, the circle's clip cut the badge off.
+                val attentionCount = pendingNotifications.size + recentPayments.size
+                BadgedBox(
+                    badge = {
+                        if (attentionCount > 0) {
+                            Badge(modifier = Modifier.offset(x = (-6).dp, y = 6.dp)) {
+                                Text(if (attentionCount > 9) "9+" else attentionCount.toString())
                             }
+                        }
+                    }
+                ) {
+                    Surface(
+                        onClick = {
+                            // Refresh first so Scan & Pay statuses are current.
+                            pendingNotificationsViewModel.refresh()
+                            showPendingNotifications = true
+                        },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(8.dp),
+                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Notifications,
-                                contentDescription = "Missed expenses"
+                                contentDescription = if (attentionCount > 0) "Missed expenses, $attentionCount" else "Missed expenses"
                             )
                         }
                     }
@@ -1888,52 +1892,53 @@ private fun SettlementHistoryDialog(
 ) {
     val dateFormat = remember { SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("${friend.name} — settlement history") },
-        text = {
-            if (settlements.isEmpty()) {
-                Text("No settlements recorded yet.")
-            } else {
-                Column {
-                    settlements.forEachIndexed { index, settlement ->
-                        if (index > 0) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                        }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = if (settlement.amount >= 0) {
-                                        "Received ${formatRupeeIndian(settlement.amount)}"
-                                    } else {
-                                        "Paid ${formatRupeeIndian(abs(settlement.amount))}"
-                                    },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
-                                )
-                                Text(
-                                    text = dateFormat.format(Date(settlement.settledAt)),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            TextButton(onClick = { onCorrect(settlement) }) { Text("Edit") }
-                            TextButton(onClick = { onDelete(settlement) }) { Text("Delete") }
-                        }
+    AppSheet(
+        title = "${friend.name} · settlements",
+        onDismiss = onDismiss,
+        trailing = { TextButton(onClick = onDismiss) { Text("Close") } }
+    ) {
+        if (settlements.isEmpty()) {
+            Text(
+                text = "No settlements recorded yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 24.dp)
+            )
+        } else {
+            settlements.forEachIndexed { index, settlement ->
+                if (index > 0) {
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (settlement.amount >= 0) {
+                                "Received ${formatRupeeIndian(settlement.amount)}"
+                            } else {
+                                "Paid ${formatRupeeIndian(abs(settlement.amount))}"
+                            },
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                        )
+                        Text(
+                            text = dateFormat.format(Date(settlement.settledAt)),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = { onCorrect(settlement) }) { Text("Edit") }
+                    TextButton(onClick = { onDelete(settlement) }) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
         }
-    )
+    }
 }
 
 

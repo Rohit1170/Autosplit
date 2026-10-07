@@ -38,4 +38,21 @@ class SmsSenderFilterTest {
         )
         assertTrue(t != null && t.type == "DEBIT")
     }
+
+    @Test fun `IDBI UPI debit with payee credited is parsed`() {
+        val t = parseBankSms(
+            sms = "IDBI Bank Acct XX275 debited for Rs 20.00 on 05-Oct-26; Bal Rs 13657.46 SONAM HOTEL " +
+                "credited. UPI:130737839605. To Block UPI send SMS UPIBLOCK <Mob. No> to 07799726511 " +
+                "or call 18002094324-IDBI Bank",
+            sender = "JD-IDBIBK-S"
+        )
+        assertTrue(t != null)
+        t!!
+        org.junit.Assert.assertEquals("DEBIT", t.type)
+        org.junit.Assert.assertEquals("20.00", t.amount)
+        org.junit.Assert.assertEquals("SONAM HOTEL", t.merchant)
+        org.junit.Assert.assertEquals("130737839605", PendingPaymentMatcher.extractUpiRef12(
+            "UPI:130737839605. To Block UPI send SMS"
+        ))
+    }
 }
