@@ -39,6 +39,10 @@ interface ExpenseDao {
     )
     suspend fun attachBankReference(id: Int, upi: String, bank: String, accountIdentifier: String?)
 
+    /** Used when a custom category is deleted: its expenses move to [to] (usually "Other"). */
+    @Query("UPDATE expenses SET category = :to WHERE category = :from")
+    suspend fun recategorize(from: String, to: String)
+
     @Query("UPDATE expenses SET payer = :newName WHERE payer = :oldName")
     suspend fun renamePayer(oldName: String, newName: String)
 
@@ -55,6 +59,27 @@ interface ExpenseDao {
     suspend fun deleteExpenseWithParticipants(expenseId: Int) {
         deleteParticipantsForExpense(expenseId)
         deleteExpenseById(expenseId)
+    }
+
+    // ---- Trip deletion ----
+
+    @Query("SELECT COUNT(*) FROM expenses WHERE tripId = :tripId")
+    suspend fun countForTrip(tripId: Int): Int
+
+    /** Keeps the expenses but un-tags them, so they show under Main. */
+    @Query("UPDATE expenses SET tripId = NULL WHERE tripId = :tripId")
+    suspend fun detachFromTrip(tripId: Int)
+
+    @Query("DELETE FROM expense_participants WHERE expenseId IN (SELECT id FROM expenses WHERE tripId = :tripId)")
+    suspend fun deleteParticipantsForTrip(tripId: Int)
+
+    @Query("DELETE FROM expenses WHERE tripId = :tripId")
+    suspend fun deleteExpensesForTrip(tripId: Int)
+
+    @Transaction
+    suspend fun deleteTripExpensesWithParticipants(tripId: Int) {
+        deleteParticipantsForTrip(tripId)
+        deleteExpensesForTrip(tripId)
     }
 
     @Transaction

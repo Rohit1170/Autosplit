@@ -37,10 +37,9 @@ class SmsReceiver : BroadcastReceiver() {
         // Personal messages (from a phone number) are dropped right here —
         // before any parsing — so a friend texting "money debited from
         // ***1234 ... 50,000" can never become an expense. Never log the body.
-        if (sender == null || !isTransactionalSender(sender)) {
-            Log.d("SMS_RECEIVER", "Ignored SMS from a non-bank sender")
-            return
-        }
+        Log.i(SmsIngestion.TAG, "live SMS received from [${sender?.let { SmsIngestion.maskSender(it) }}]")
+        if (sender == null) return
+        // Sender filtering (and its log line) happens in SmsIngestion.process.
 
         // goAsync so the database work can finish after onReceive returns.
         // The raw SMS body is only ever held in memory — only parsed,

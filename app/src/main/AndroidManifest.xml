@@ -101,6 +101,11 @@
 
         </receiver>
 
+        <!-- "Just me" / "Ignore" buttons on the "₹X spent" notification -->
+        <receiver
+            android:name=".ExpenseActionReceiver"
+            android:exported="false" />
+
         <!-- Home-screen widget: month spend, balances, Scan & Pay / Add expense -->
         <receiver
             android:name=".SplitleeWidget"
@@ -108,11 +113,28 @@
             android:label="Splitlee">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <!-- Clock / time-zone changes: "today" must be recomputed. -->
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.DATE_CHANGED" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/splitlee_widget_info" />
         </receiver>
+        <!-- Reads bank alerts from messaging-app notifications (RCS bank
+             messages never reach the SMS inbox). Only active after the user
+             turns on Notification access for Splitlee. -->
+        <service
+            android:name=".BankNotificationListener"
+            android:exported="true"
+            android:label="Splitlee bank alerts"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
     </application>
 
 </manifest>

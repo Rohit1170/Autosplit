@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 class FriendViewModel : ViewModel() {
@@ -19,6 +20,10 @@ class FriendViewModel : ViewModel() {
 
     private val _balances = MutableStateFlow<Map<Int, FriendBalance>>(emptyMap())
     val balances: StateFlow<Map<Int, FriendBalance>> = _balances.asStateFlow()
+
+    /** Per-expense paid-back status (Settled / Part paid), keyed by expense id. */
+    private val _expenseSettlement = MutableStateFlow<Map<Int, SettleStatus.ExpenseSettlement>>(emptyMap())
+    val expenseSettlement: StateFlow<Map<Int, SettleStatus.ExpenseSettlement>> = _expenseSettlement.asStateFlow()
 
     private val _totalOwedToYou = MutableStateFlow(0.0)
     val totalOwedToYou: StateFlow<Double> = _totalOwedToYou.asStateFlow()
@@ -39,20 +44,37 @@ class FriendViewModel : ViewModel() {
             this.settlementDao = settlementDao
             this.expenseParticipantDao = expenseParticipantDao
             refresh()
+            // Recompute whenever expenses/participants change. Without this,
+            // balances were only recomputed on resume — which runs BEFORE
+            // Room has re-emitted the expense just saved in the split screen,
+            // so a new "paid by a friend" expense could show "You owe ₹0"
+            // until the next refresh.
+            viewModelScope.launch {
+                ExpenseRepository.changes(expenseDao)
+                    .drop(1)
+                    .collect { refresh() }
+            }
         }
     }
+
+    private var refreshJob: kotlinx.coroutines.Job? = null
 
     fun refresh() {
         if (!::friendDao.isInitialized || !::expenseDao.isInitialized || !::settlementDao.isInitialized) {
             return
         }
 
-        viewModelScope.launch {
+        // Latest refresh wins: an older, slower compute can't overwrite a newer one.
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             val (displayFriends, calculatedBalances) =
                 FriendBalances.compute(friendDao, expenseDao, settlementDao)
 
             _friends.value = displayFriends
             _balances.value = calculatedBalances
+            _expenseSettlement.value = SettleStatus.compute(
+                ExpenseRepository.allExpenses(expenseDao), displayFriends, calculatedBalances
+            )
             _totalOwedToYou.value = calculatedBalances.values.sumOf {
                 it.netAmount.coerceAtLeast(0.0)
             }

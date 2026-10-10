@@ -78,27 +78,37 @@ fun showExpenseNotification(
             Manifest.permission.POST_NOTIFICATIONS
         ) != PackageManager.PERMISSION_GRANTED
     ) {
+        android.util.Log.w(SmsIngestion.TAG, "notification NOT shown: notification permission is off")
         return
+    }
+    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+        android.util.Log.w(SmsIngestion.TAG, "notification NOT shown: notifications disabled for the app")
     }
 
     val notification = NotificationCompat.Builder(
         context,
         channelId
     )
-        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setSmallIcon(R.drawable.ic_stat_splitlee)
+        .setColor(androidx.core.content.ContextCompat.getColor(context, R.color.splitlee_brand_green))
         .setContentTitle(
             "💸 ${formatRupeeIndian(transaction.amount)} spent"
         )
         .setContentText(
-            "${transaction.merchant} • Tap to split"
+            "${transaction.merchant} • Split, just me, or ignore"
         )
         .setStyle(
             NotificationCompat.BigTextStyle()
                 .bigText(
                     "${formatRupeeIndian(transaction.amount)} spent at ${transaction.merchant}\n" +
-                            "Who was this for? Tap to select people."
+                            "Who was this for?"
                 )
         )
+        // One tap, no app: Split opens the split screen; Just me saves it as
+        // your own expense; Ignore drops it (ExpenseActionReceiver).
+        .addAction(0, "Split", pendingIntent)
+        .addAction(0, "Just me", expenseAction(context, ExpenseActionReceiver.ACTION_JUST_ME, pendingNotificationId))
+        .addAction(0, "Ignore", expenseAction(context, ExpenseActionReceiver.ACTION_IGNORE, pendingNotificationId))
         .setPriority(
             NotificationCompat.PRIORITY_HIGH
         )
@@ -109,10 +119,22 @@ fun showExpenseNotification(
     NotificationManagerCompat
         .from(context)
         .notify(
-            System.currentTimeMillis().toInt(),
+            // Stable per pending row, so the action buttons can dismiss it.
+            QuickExpenseActions.notificationIdFor(pendingNotificationId),
             notification
         )
 }
+
+private fun expenseAction(context: Context, action: String, pendingId: Int): PendingIntent =
+    PendingIntent.getBroadcast(
+        context,
+        // Unique per (row, action) so the two buttons never share an intent.
+        pendingId * 4 + if (action == ExpenseActionReceiver.ACTION_JUST_ME) 1 else 2,
+        Intent(context, ExpenseActionReceiver::class.java)
+            .setAction(action)
+            .putExtra(ExpenseActionReceiver.EXTRA_PENDING_ID, pendingId),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
 
 
 /**
@@ -153,7 +175,8 @@ fun showPaymentConfirmedNotification(
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
     val notification = NotificationCompat.Builder(context, channelId)
-        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setSmallIcon(R.drawable.ic_stat_splitlee)
+        .setColor(androidx.core.content.ContextCompat.getColor(context, R.color.splitlee_brand_green))
         .setContentTitle(title)
         .setContentText(text)
         .setStyle(NotificationCompat.BigTextStyle().bigText(text))

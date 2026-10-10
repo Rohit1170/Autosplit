@@ -1,13 +1,36 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older that API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Google Auto Backup for Android 6–11 (Android 12+ uses data_extraction_rules.xml).
+
+  The phone's own Google account does the backup (~daily, idle + charging +
+  Wi-Fi) — no login in Splitlee, no server, no INTERNET permission. On a new
+  phone / reinstall, Android restores these files before Splitlee first opens.
+
+  Because there are <include> rules, ONLY what is listed is backed up.
+  requireFlags="clientSideEncryption": only back up when the backup is
+  end-to-end encrypted with the phone's screen lock (Android 9+), since this
+  is bank transaction history.
+
+  Deliberately NOT included (tied to the old phone):
+    sms_catch_up      - inbox-check start time; the new phone starts fresh, so
+                        SMS migrated to it are never imported again
+    location_prefs    - last known location
+    ussd_pay          - "*99# doesn't work for me" on the old SIM
+    WorkManager DB, Google Maps cache, app caches
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- Room database: all expenses, friends, splits, settlements, trips,
+         payments, learned categories. -wal/-shm keep the copy consistent;
+         an older backed-up schema is upgraded by Room's migrations. -->
+    <include domain="database" path="splitwise_auto_database" requireFlags="clientSideEncryption" />
+    <include domain="database" path="splitwise_auto_database-wal" requireFlags="clientSideEncryption" />
+    <include domain="database" path="splitwise_auto_database-shm" requireFlags="clientSideEncryption" />
+
+    <!-- SMS already handled: stops duplicate expense prompts on the new phone. -->
+    <include domain="sharedpref" path="processed_sms.xml" requireFlags="clientSideEncryption" />
+    <!-- Last total shown: the counter continues from it instead of starting over. -->
+    <include domain="sharedpref" path="expense_counter.xml" requireFlags="clientSideEncryption" />
+    <!-- Currently active trip. -->
+    <include domain="sharedpref" path="active_trip_prefs.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="custom_categories.xml" requireFlags="clientSideEncryption" />
 </full-backup-content>

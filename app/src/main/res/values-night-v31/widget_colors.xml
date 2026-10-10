@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splitlee widget palette: the dark green look (same in light/dark mode and
+     on every Android version — the card is always dark, so text must stay
+     light). Material You dynamic colours were tried and switched off by
+     request; the previous dynamic version is in _claude_backups (bak17). -->
+<resources>
+    <color name="widget_bg">#121A17</color>
+    <color name="widget_surface">#1F2B26</color>
+    <color name="widget_border">#26322D</color>
+    <color name="widget_text_primary">#FFFFFF</color>
+    <color name="widget_text_secondary">#A9B5AF</color>
+    <color name="widget_accent">#2FD39A</color>
+    <color name="widget_accent_container">#1C3A2F</color>
+    <color name="widget_info">#7EA4F5</color>
+    <color name="widget_info_container">#22304A</color>
+
+    <color name="widget_positive">#2FD39A</color>
+    <color name="widget_positive_container">#16302A</color>
+    <color name="widget_warn">#F0A63C</color>
+    <color name="widget_warn_container">#33281A</color>
+</resources>

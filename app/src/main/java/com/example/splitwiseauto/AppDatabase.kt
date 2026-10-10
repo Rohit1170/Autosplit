@@ -325,6 +325,21 @@ abstract class AppDatabase : RoomDatabase() {
                     )
                     .build()
 
+                // Widget refresh driven by real data changes (any process-local
+                // write to these tables, from any screen or background path).
+                // SplitleeWidget.requestUpdate is debounced and a no-op when no
+                // widget is placed, so this costs nothing otherwise.
+                val appContext = context.applicationContext
+                instance.invalidationTracker.addObserver(
+                    object : androidx.room.InvalidationTracker.Observer(
+                        "expenses", "expense_participants", "settlements", "friends"
+                    ) {
+                        override fun onInvalidated(tables: Set<String>) {
+                            SplitleeWidget.requestUpdate(appContext)
+                        }
+                    }
+                )
+
                 INSTANCE = instance
 
                 instance

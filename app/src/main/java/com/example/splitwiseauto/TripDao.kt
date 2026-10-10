@@ -14,4 +14,7 @@ interface TripDao {
 
     @Query("SELECT * FROM trips WHERE id = :id LIMIT 1")
     suspend fun getById(id: Int): Trip?
+
+    @Query("DELETE FROM trips WHERE id = :id")
+    suspend fun deleteById(id: Int)
 }

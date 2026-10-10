@@ -38,3 +38,4 @@ keystore.properties
 # goldie screenshot output
 /out/
 *.bak[0-9]
+/_claude_backups/

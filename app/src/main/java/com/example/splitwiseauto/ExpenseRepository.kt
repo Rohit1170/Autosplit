@@ -46,6 +46,14 @@ object ExpenseRepository {
         }
     }
 
+    /**
+     * Emits every time the expense/participant tables change (after the first
+     * real result). Lets a screen recompute live instead of waiting for the
+     * next resume.
+     */
+    fun changes(expenseDao: ExpenseDao): kotlinx.coroutines.flow.Flow<List<ExpenseWithParticipants>> =
+        flowFor(expenseDao).filterNotNull()
+
     /** The full expense+participant history — the same list every caller sees. */
     suspend fun allExpenses(expenseDao: ExpenseDao): List<ExpenseWithParticipants> =
         flowFor(expenseDao).filterNotNull().first()

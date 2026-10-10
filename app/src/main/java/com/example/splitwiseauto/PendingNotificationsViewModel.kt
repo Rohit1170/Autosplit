@@ -34,10 +34,20 @@ class PendingNotificationsViewModel(application: Application) : AndroidViewModel
         }
     }
 
+    /** "Just me": saves the pending debit as a personal expense (no split screen). */
+    fun justMe(id: Int) {
+        viewModelScope.launch {
+            QuickExpenseActions.saveJustMe(getApplication<Application>(), id)
+            QuickExpenseActions.cancelNotification(getApplication<Application>(), id)
+            refresh()
+        }
+    }
+
     /** Discards a pending expense without opening/saving it. */
     fun dismiss(id: Int) {
         viewModelScope.launch {
             db.pendingExpenseNotificationDao().deleteById(id)
+            QuickExpenseActions.cancelNotification(getApplication<Application>(), id)
             refresh()
         }
     }

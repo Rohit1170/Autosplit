@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default 4x3 = LARGE (the dark green design). 4x2 = MEDIUM. Resizable down to ~2x2 (SMALL:
+     total + vs yesterday) and up to 4x3+ (LARGE: tiles). On Android 12+ the
+     launcher picks the layout itself from the size map in SplitleeWidget;
+     older versions get re-rendered on resize (onAppWidgetOptionsChanged).
+     Updates: Room change tracker (data actually changed) + every 30 min for
+     the date roll-over. No polling, no timers. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/widget_splitlee_large"
+    android:minWidth="250dp"
+    android:minHeight="180dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="100dp"
+    android:previewLayout="@layout/widget_splitlee_large"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="4"
+    android:targetCellHeight="3"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />

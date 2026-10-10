@@ -243,12 +243,6 @@ class QrScanActivity : ComponentActivity() {
         }
     }
 
-    override fun onStop() {
-        super.onStop()
-        // Keep the home-screen widget in step with anything changed here.
-        SplitleeWidget.requestUpdate(this)
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         inFlightPaymentId = savedInstanceState?.getString(STATE_IN_FLIGHT_ID)

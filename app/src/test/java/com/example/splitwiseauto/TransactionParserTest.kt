@@ -272,4 +272,29 @@ class TransactionParserTest {
         assertEquals("1500.00", transaction?.amount)
         assertEquals("Anil Kumar", transaction?.merchant)
     }
+
+    @Test
+    fun parsesIciciCardSpendWithMerchantAfterDate() {
+        val sms = "INR 3,823.00 spent using ICICI Bank Card XX1000 on 09-Oct-26 on FlipkartInterne. " +
+            "Avl Limit: INR 62,371.11. If not you, call 1800 2662/SMS BLOCK 1000 to 9215676766."
+        val transaction = parseBankSms(sms, "JD-ICICIT-S")
+
+        assertNotNull(transaction)
+        assertEquals("3823.00", transaction?.amount)
+        assertEquals("DEBIT", transaction?.type)
+        assertEquals("Flipkart", transaction?.merchant)
+        assertEquals("Shopping", categorize(transaction!!.merchant).name)
+    }
+
+    @Test
+    fun parsesUnknownMerchantAfterDate() {
+        val transaction = parseBankSms(
+            "INR 450.00 spent using ICICI Bank Card XX1000 on 09-Oct-26 on SHREE GANESH HO. " +
+                "Avl Limit: INR 62,371.11. If not you, call 1800 2662/SMS BLOCK 1000 to 9215676766.",
+            "JD-ICICIT-S"
+        )
+
+        assertEquals("SHREE GANESH HO", transaction?.merchant)
+        assertEquals("Food", categorize(transaction!!.merchant).name)
+    }
 }

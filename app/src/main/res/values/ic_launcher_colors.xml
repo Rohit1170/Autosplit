@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Splitlee logo navy -->
+    <color name="ic_launcher_background">#001B3C</color>
+    <!-- Logo green, used to tint the notification icon -->
+    <color name="splitlee_brand_green">#14B88A</color>
+</resources>

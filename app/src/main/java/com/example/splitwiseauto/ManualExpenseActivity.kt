@@ -9,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -50,6 +51,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.Icon
 import androidx.compose.ui.draw.clip
@@ -65,14 +67,9 @@ class ManualExpenseActivity : ComponentActivity() {
     private var editingBank: String? = null
     private var editingAccountIdentifier: String? = null
 
-    override fun onStop() {
-        super.onStop()
-        // Keep the home-screen widget in step with anything changed here.
-        SplitleeWidget.requestUpdate(this)
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CustomCategories.ensureLoaded(this)
         editingExpenseId = intent.getIntExtra("expenseId", -1).takeIf { it > 0 }
         editingBank = intent.getStringExtra("bank")
         editingAccountIdentifier = intent.getStringExtra("accountIdentifier")
@@ -187,6 +184,45 @@ private fun ManualExpenseScreen(
     var payer by remember { mutableStateOf(initialPayer) }
     var showPayerPicker by remember { mutableStateOf(false) }
     var friends by remember { mutableStateOf<List<Friend>>(emptyList()) }
+    // Bumped whenever a custom category is added/removed so the picker re-reads it.
+    var categoriesVersion by remember { mutableStateOf(0) }
+    var showNewCategory by remember { mutableStateOf(false) }
+    var categoryToDelete by remember { mutableStateOf<String?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    if (showNewCategory) {
+        NewCategoryDialog(
+            onDismiss = { showNewCategory = false },
+            onCreate = { name, iconKey, color ->
+                CustomCategories.add(context, name, iconKey, color)?.let { saved ->
+                    selectedCategory = saved
+                    categoryChosenManually = true
+                    categoryTappedByUser = true
+                }
+                categoriesVersion++
+                showNewCategory = false
+            }
+        )
+    }
+
+    categoryToDelete?.let { name ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { categoryToDelete = null },
+            title = { Text("Delete \"$name\"?") },
+            text = { Text("Expenses in this category will move to Other. Nothing is removed from your totals.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    categoryToDelete = null
+                    if (selectedCategory.equals(name, ignoreCase = true)) selectedCategory = OTHER.name
+                    scope.launch {
+                        CustomCategories.delete(context, name)
+                        categoriesVersion++
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { categoryToDelete = null }) { Text("Cancel") } }
+        )
+    }
 
     LaunchedEffect(Unit) {
         friends = AppDatabase.getDatabase(context).friendDao().getAllFriends()
@@ -312,61 +348,113 @@ private fun ManualExpenseScreen(
                             colors = expenseFieldColors()
                         )
 
-                        OutlinedTextField(
-                            value = date,
-                            onValueChange = {},
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    val calendar = Calendar.getInstance()
-                                    DatePickerDialog(
-                                        context,
-                                        { _, year, month, day ->
-                                            val pickedCalendar = Calendar.getInstance().apply {
-                                                set(year, month, day, 12, 0, 0)
-                                            }
-                                            date = String.format(
-                                                Locale.US,
-                                                "%02d-%s-%02d",
-                                                day,
-                                                SimpleDateFormat("MMM", Locale.US)
-                                                    .format(pickedCalendar.time),
-                                                year % 100
-                                            )
-                                            dateMillis = pickedCalendar.timeInMillis
-                                            validationMessage = null
-                                        },
-                                        calendar.get(Calendar.YEAR),
-                                        calendar.get(Calendar.MONTH),
-                                        calendar.get(Calendar.DAY_OF_MONTH)
-                                    ).show()
-                                },
-                            label = { Text("Date") },
-                            supportingText = { Text("Tap to choose a date") },
-                            singleLine = true,
-                            readOnly = true,
-                            colors = expenseFieldColors()
-                        )
+                        // Date + time of the payment. A new expense starts at
+                        // "now"; picking a date keeps the chosen time of day.
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = date,
+                                onValueChange = {},
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .clickable {
+                                        val current = Calendar.getInstance().apply { timeInMillis = dateMillis }
+                                        DatePickerDialog(
+                                            context,
+                                            { _, year, month, day ->
+                                                val pickedCalendar = Calendar.getInstance().apply {
+                                                    timeInMillis = dateMillis
+                                                    set(Calendar.YEAR, year)
+                                                    set(Calendar.MONTH, month)
+                                                    set(Calendar.DAY_OF_MONTH, day)
+                                                }
+                                                date = String.format(
+                                                    Locale.US,
+                                                    "%02d-%s-%02d",
+                                                    day,
+                                                    SimpleDateFormat("MMM", Locale.US)
+                                                        .format(pickedCalendar.time),
+                                                    year % 100
+                                                )
+                                                dateMillis = pickedCalendar.timeInMillis
+                                                validationMessage = null
+                                            },
+                                            current.get(Calendar.YEAR),
+                                            current.get(Calendar.MONTH),
+                                            current.get(Calendar.DAY_OF_MONTH)
+                                        ).show()
+                                    },
+                                label = { Text("Date") },
+                                singleLine = true,
+                                readOnly = true,
+                                colors = expenseFieldColors()
+                            )
+                            OutlinedTextField(
+                                value = expenseTimeLabel(dateMillis) ?: "Add time",
+                                onValueChange = {},
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        val current = Calendar.getInstance().apply { timeInMillis = dateMillis }
+                                        android.app.TimePickerDialog(
+                                            context,
+                                            { _, hour, minute ->
+                                                dateMillis = Calendar.getInstance().apply {
+                                                    timeInMillis = dateMillis
+                                                    set(Calendar.HOUR_OF_DAY, hour)
+                                                    set(Calendar.MINUTE, minute)
+                                                    // Second = 1 marks a REAL chosen time
+                                                    // (exactly 12:00:00 = old "date only").
+                                                    set(Calendar.SECOND, 1)
+                                                    set(Calendar.MILLISECOND, 0)
+                                                }.timeInMillis
+                                            },
+                                            current.get(Calendar.HOUR_OF_DAY),
+                                            current.get(Calendar.MINUTE),
+                                            android.text.format.DateFormat.is24HourFormat(context)
+                                        ).show()
+                                    },
+                                label = { Text("Time") },
+                                singleLine = true,
+                                readOnly = true,
+                                colors = expenseFieldColors()
+                            )
+                        }
 
                         Text("Category", style = MaterialTheme.typography.titleSmall)
-                        // Rows of 3 (7 categories now: Groceries and
-                        // Entertainment were added); empty slots keep widths even.
-                        expenseCategories.chunked(3).forEach { rowCategories ->
+                        // Built-ins + the user's own, then a "+ New" tile.
+                        // Long-press a custom category to delete it.
+                        val pickerCategories = remember(categoriesVersion) { allCategories() }
+                        val pickerItems: List<Category?> = pickerCategories + listOf<Category?>(null)
+                        pickerItems.chunked(3).forEach { rowCategories ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 rowCategories.forEach { category ->
-                                    CategoryOption(
-                                        category = category,
-                                        selected = selectedCategory == category.name,
-                                        onClick = {
-                                            selectedCategory = category.name
-                                            categoryChosenManually = true
-                                            categoryTappedByUser = true
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                    if (category == null) {
+                                        NewCategoryTile(
+                                            onClick = { showNewCategory = true },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    } else {
+                                        val isCustom = CustomCategories.isCustom(category.name)
+                                        CategoryOption(
+                                            category = category,
+                                            selected = selectedCategory.equals(category.name, ignoreCase = true),
+                                            onClick = {
+                                                selectedCategory = category.name
+                                                categoryChosenManually = true
+                                                categoryTappedByUser = true
+                                            },
+                                            onLongClick = if (isCustom) {
+                                                { categoryToDelete = category.name }
+                                            } else null,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
                                 }
                                 repeat(3 - rowCategories.size) {
                                     Spacer(modifier = Modifier.weight(1f))
@@ -488,12 +576,14 @@ private object AddBillTokens {
     @Composable fun onAccent(): androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color(0xFF06231A)
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun CategoryOption(
     category: Category,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null
 ) {
     val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
     val selectedContainer = if (darkTheme) {
@@ -503,7 +593,9 @@ private fun CategoryOption(
     }
 
     Card(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (selected) selectedContainer else MaterialTheme.colorScheme.surfaceVariant
@@ -535,4 +627,129 @@ private fun CategoryOption(
             )
         }
     }
+}
+
+
+@Composable
+private fun NewCategoryTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = "New category",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "New",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NewCategoryDialog(
+    onDismiss: () -> Unit,
+    onCreate: (name: String, iconKey: String, color: Long) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var iconKey by remember { mutableStateOf(CustomCategories.ICONS.keys.first()) }
+    var color by remember { mutableStateOf(CustomCategories.COLORS.first()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val accent = Color(color)
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New category") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = {
+                        if (it.length <= CustomCategories.MAX_NAME_LENGTH) name = it
+                        error = null
+                    },
+                    label = { Text("Name") },
+                    placeholder = { Text("e.g. Pets, Gym, Gifts") },
+                    singleLine = true,
+                    isError = error != null,
+                    supportingText = if (error != null) {
+                        { Text(error.orEmpty()) }
+                    } else null,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("Icon", style = MaterialTheme.typography.labelLarge)
+                CustomCategories.ICONS.entries.toList().chunked(5).forEach { rowIcons ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        rowIcons.forEach { (key, vector) ->
+                            val picked = key == iconKey
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (picked) accent.copy(alpha = 0.18f)
+                                        else MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                    .clickable { iconKey = key },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = vector,
+                                    contentDescription = key,
+                                    tint = if (picked) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                Text("Colour", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    CustomCategories.COLORS.forEach { c ->
+                        val picked = c == color
+                        Box(
+                            modifier = Modifier
+                                .size(if (picked) 30.dp else 26.dp)
+                                .clip(CircleShape)
+                                .background(Color(c))
+                                .clickable { color = c }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val problem = CustomCategories.validate(name)
+                if (problem != null) error = problem
+                else onCreate(name, iconKey, color)
+            }) { Text("Add") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

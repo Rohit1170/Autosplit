@@ -76,6 +76,7 @@ class ExpenseDetailActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CustomCategories.ensureLoaded(this)
 
         database = AppDatabase.getDatabase(this)
         val expenseId = intent.getIntExtra("expenseId", -1)
@@ -90,12 +91,23 @@ class ExpenseDetailActivity : ComponentActivity() {
                 var expense by remember { mutableStateOf<Expense?>(null) }
                 var participants by remember { mutableStateOf<List<ExpenseParticipant>>(emptyList()) }
                 var linkedPayment by remember { mutableStateOf<PendingPayment?>(null) }
+                var settlement by remember { mutableStateOf<SettleStatus.ExpenseSettlement?>(null) }
                 var loading by remember { mutableStateOf(true) }
 
                 LaunchedEffect(expenseId) {
                     expense = database.expenseDao().getExpenseById(expenseId)
                     participants = database.expenseParticipantDao().getParticipantsForExpense(expenseId)
                     linkedPayment = database.pendingPaymentDao().findByBillId(expenseId.toString())
+                    // Paid-back status per person, from the same balances the
+                    // Friends tab shows (settle-ups applied oldest split first).
+                    settlement = runCatching {
+                        val (friends, balances) = FriendBalances.compute(
+                            database.friendDao(), database.expenseDao(), database.settlementDao()
+                        )
+                        SettleStatus.compute(
+                            ExpenseRepository.allExpenses(database.expenseDao()), friends, balances
+                        )[expenseId]
+                    }.getOrNull()
                     loading = false
                 }
 
@@ -108,6 +120,7 @@ class ExpenseDetailActivity : ComponentActivity() {
                         expense = expense,
                         participants = participants,
                         linkedPayment = linkedPayment,
+                        settlement = settlement,
                         onClose = { finish() },
                         onEdit = { current ->
                             startActivity(
@@ -138,6 +151,7 @@ private fun ExpenseDetailScreen(
     expense: Expense?,
     participants: List<ExpenseParticipant>,
     linkedPayment: PendingPayment? = null,
+    settlement: SettleStatus.ExpenseSettlement? = null,
     onClose: () -> Unit,
     onEdit: (Expense) -> Unit
 ) {
@@ -186,7 +200,7 @@ private fun ExpenseDetailScreen(
                     item { ExpenseSummaryCard(expense = expense) }
                     linkedPayment?.let { payment -> item { ScanPayStatusCard(payment) } }
                     item { ExpenseLocationCard(expense = expense) }
-                    item { ExpenseParticipantsCard(expense = expense, participants = participants) }
+                    item { ExpenseParticipantsCard(expense = expense, participants = participants, settlement = settlement) }
                     item { Spacer(modifier = Modifier.height(8.dp)) }
                 }
             }
@@ -265,6 +279,9 @@ private fun ExpenseSummaryCard(expense: Expense) {
             Spacer(modifier = Modifier.height(12.dp))
 
             ExpenseDetailRow(label = "Date", value = expense.date)
+            expenseTimeLabel(expense.timestampMillis)?.let { time ->
+                ExpenseDetailRow(label = "Time", value = time)
+            }
             ExpenseDetailRow(
                 label = "Bank",
                 value = if (expense.accountIdentifier != null) {
@@ -392,12 +409,17 @@ private fun ExpenseLocationCard(expense: Expense) {
 }
 
 @Composable
-private fun ExpenseParticipantsCard(expense: Expense, participants: List<ExpenseParticipant>) {
+private fun ExpenseParticipantsCard(
+    expense: Expense,
+    participants: List<ExpenseParticipant>,
+    settlement: SettleStatus.ExpenseSettlement? = null
+) {
     val context = LocalContext.current
-    // No per-expense settlement flag exists on ExpenseParticipant, so "paid" is
-    // derived from who fronted the money: the payer already paid, everyone else
-    // owes their share until a settlement is recorded elsewhere in the app.
+    // Status per person: the payer "Paid"; everyone else's share is
+    // Settled / part paid / Pending, derived by SettleStatus from the
+    // Friends balances (settle-ups cover the oldest splits first).
     val pendingWarnColor = Color(0xFFF59E0B)
+    val payerIsMe = expense.payer.equals("Me", ignoreCase = true)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -427,6 +449,28 @@ private fun ExpenseParticipantsCard(expense: Expense, participants: List<Expense
             } else {
                 participants.forEachIndexed { index, participant ->
                     val isPaid = participant.personName.equals(expense.payer, ignoreCase = true)
+                    val isMe = participant.personName.equals("Me", ignoreCase = true)
+                    // Which tracked debt this row is: friend -> me (I paid), or
+                    // me -> payer (a friend paid). Friend-to-friend isn't tracked.
+                    val part = when {
+                        isPaid -> null
+                        payerIsMe -> settlement?.partFor(participant.personName)
+                        isMe -> settlement?.partFor(expense.payer)
+                        else -> null
+                    }
+                    val tracked = !isPaid && (payerIsMe || isMe)
+                    val (statusText, statusColor) = when {
+                        isPaid -> "Paid" to positiveColor()
+                        !tracked -> "Owes ${expense.payer}" to MaterialTheme.colorScheme.onSurfaceVariant
+                        part?.isSettled == true -> (if (isMe) "Paid back" else "Settled") to positiveColor()
+                        part?.isPartial == true ->
+                            "${formatRupeeIndian(part.cleared)} of ${formatRupeeIndian(part.share)} " +
+                                (if (isMe) "paid back" else "paid") to pendingWarnColor
+                        isMe -> "You owe ${expense.payer}" to pendingWarnColor
+                        else -> "Pending" to pendingWarnColor
+                    }
+                    val remindAmount = part?.remaining ?: participant.shareAmount
+                    val showRemind = tracked && !isMe && part?.isSettled != true
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -456,10 +500,10 @@ private fun ExpenseParticipantsCard(expense: Expense, participants: List<Expense
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = if (isPaid) "Paid" else "Pending",
+                                    text = statusText,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Medium,
-                                    color = if (isPaid) positiveColor() else pendingWarnColor
+                                    color = statusColor
                                 )
                             }
                         }
@@ -471,7 +515,7 @@ private fun ExpenseParticipantsCard(expense: Expense, participants: List<Expense
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
-                            if (!isPaid) {
+                            if (showRemind) {
                                 Spacer(modifier = Modifier.height(4.dp))
                                 OutlinedButton(
                                     onClick = {
@@ -479,7 +523,7 @@ private fun ExpenseParticipantsCard(expense: Expense, participants: List<Expense
                                         // own share sheet with a prefilled message — the
                                         // person still has to pick an app and hit send.
                                         val message = "Hey ${participant.personName}, just a reminder — " +
-                                            "you owe ${formatRupeeIndian(participant.shareAmount)} " +
+                                            "you owe ${formatRupeeIndian(remindAmount)} " +
                                             "for ${expense.merchant} (${expense.date})."
                                         val sendIntent = Intent(Intent.ACTION_SEND).apply {
                                             type = "text/plain"
@@ -491,7 +535,7 @@ private fun ExpenseParticipantsCard(expense: Expense, participants: List<Expense
                                     modifier = Modifier.height(28.dp)
                                 ) {
                                     Text(
-                                        text = "Remind · ${formatRupeeIndian(participant.shareAmount)}",
+                                        text = "Remind · ${formatRupeeIndian(remindAmount)}",
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                 }

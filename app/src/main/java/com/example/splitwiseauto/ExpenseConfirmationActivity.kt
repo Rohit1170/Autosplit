@@ -37,6 +37,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -87,14 +89,9 @@ class ExpenseConfirmationActivity : ComponentActivity() {
     private var source: String? = null
     private var paymentAttemptId: Int? = null
 
-    override fun onStop() {
-        super.onStop()
-        // Keep the home-screen widget in step with anything changed here.
-        SplitleeWidget.requestUpdate(this)
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CustomCategories.ensureLoaded(this)
 
         database = AppDatabase.getDatabase(this)
         editingExpenseId = intent.getIntExtra("expenseId", -1).takeIf { it > 0 }
@@ -180,14 +177,18 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                         friends = database.friendDao(),
                         initialSelectedAmounts = initialSelectedAmounts,
                         isScanPay = source == "scan_pay",
+                        // Quick outcomes only for a NEW detected expense, not when editing.
+                        showQuickActions = editingExpenseId == null,
                         onSave = { selectedAmounts ->
 
                             saveExpense(
                                 selectedAmounts
                             )
                         },
+                        onJustMe = { saveExpense(mapOf("Me" to amount)) },
                         onCancel = {
                             pendingNotificationId?.let { id ->
+                                QuickExpenseActions.cancelNotification(this@ExpenseConfirmationActivity, id)
                                 lifecycleScope.launch {
                                     database.pendingExpenseNotificationDao().deleteById(id)
                                 }
@@ -290,6 +291,7 @@ class ExpenseConfirmationActivity : ComponentActivity() {
 
             pendingNotificationId?.let { id ->
                 database.pendingExpenseNotificationDao().deleteById(id)
+                QuickExpenseActions.cancelNotification(this@ExpenseConfirmationActivity, id)
             }
 
             paymentAttemptId?.let { id ->
@@ -336,7 +338,9 @@ private fun ExpenseConfirmationScreen(
     friends: FriendDao,
     initialSelectedAmounts: Map<String, Double>,
     isScanPay: Boolean = false,
+    showQuickActions: Boolean = false,
     onSave: (Map<String, Double>) -> Unit,
+    onJustMe: () -> Unit = {},
     onCancel: () -> Unit
 ) {
 
@@ -810,6 +814,35 @@ private fun ExpenseConfirmationScreen(
                 )
             ) {
                 Text("Save Expense")
+            }
+
+            if (showQuickActions) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            if (!saving) {
+                                saving = true
+                                onJustMe()
+                            }
+                        },
+                        enabled = !saving,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Just me")
+                    }
+                    TextButton(
+                        onClick = onCancel,
+                        enabled = !saving,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Ignore")
+                    }
+                }
             }
         }
     }

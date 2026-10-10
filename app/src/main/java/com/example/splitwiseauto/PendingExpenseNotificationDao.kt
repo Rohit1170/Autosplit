@@ -23,6 +23,9 @@ interface PendingExpenseNotificationDao {
     @Query("DELETE FROM pending_expense_notifications WHERE upi = :upi")
     suspend fun deleteByUpi(upi: String)
 
+    @Query("SELECT * FROM pending_expense_notifications WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Int): PendingExpenseNotification?
+
     @Query("DELETE FROM pending_expense_notifications WHERE id = :id")
     suspend fun deleteById(id: Int)
 }

@@ -55,6 +55,27 @@ enum class ParseConfidence { HIGH, MEDIUM, LOW }
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        /** Widget deep link: which bottom tab to show (pager page index). */
+        const val EXTRA_OPEN_TAB = "open_tab"
+        const val TAB_HOME = 0
+        const val TAB_FRIENDS = 1
+    }
+
+    /** Tab requested by the launching intent (widget); consumed by HomeScreen. */
+    private var requestedTab by androidx.compose.runtime.mutableStateOf<Int?>(null)
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readRequestedTab(intent)
+    }
+
+    private fun readRequestedTab(intent: android.content.Intent?) {
+        intent?.getIntExtra(EXTRA_OPEN_TAB, -1)?.takeIf { it >= 0 }?.let { requestedTab = it }
+        intent?.removeExtra(EXTRA_OPEN_TAB) // don't re-apply on rotation
+    }
+
     /*
      * Request SMS + Notification permissions
      */
@@ -161,14 +182,9 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    override fun onStop() {
-        super.onStop()
-        // Keep the home-screen widget in step with anything changed here.
-        SplitleeWidget.requestUpdate(this)
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CustomCategories.ensureLoaded(this)
 
         requestRequiredPermissions()
 
@@ -190,9 +206,14 @@ class MainActivity : ComponentActivity() {
             PendingPaymentTimeoutWorker.markTimedOut(this@MainActivity)
         }
 
+        readRequestedTab(intent)
+
         setContent {
             SplitWiseAutoTheme {
-                HomeScreen()
+                HomeScreen(
+                    requestedTab = requestedTab,
+                    onRequestedTabShown = { requestedTab = null }
+                )
             }
         }
     }
@@ -204,6 +225,8 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             runCatching { SmsIngestion.catchUpFromInbox(applicationContext) }
         }
+        // Safety net: opening the app always brings the widget up to date.
+        SplitleeWidget.requestUpdate(applicationContext)
     }
 
 
@@ -494,6 +517,13 @@ fun parseBankSms(
  * transaction alerts.
  */
 fun isTransactionalSender(sender: String): Boolean {
+    // Deliberately loose. The only thing that must never become an expense is
+    // a message from a PERSON, and a person always shows up as a phone
+    // number. Business senders are letter codes, but their exact shape
+    // varies by bank, carrier and phone ("JD-IDBIBK-S", "IDBIBK",
+    // "VM-IDBIBANK-T", "+JD-IDBIBK-S"...). The old strict pattern rejected
+    // unusual-but-genuine bank codes and silently dropped real debits, so
+    // now: any sender with letters is accepted, except promotional (-P).
     val raw = sender.trim().uppercase(Locale.ROOT)
     if (raw.isEmpty()) return false
 
@@ -501,14 +531,11 @@ fun isTransactionalSender(sender: String): Boolean {
     val digitsOnly = raw.replace(Regex("[+\\s\\-()]"), "")
     if (digitsOnly.all { it.isDigit() }) return false
 
-    // DLT header: optional 2-char operator/circle prefix, 3–9 alphanumeric
-    // header (at least one letter), optional -S / -T / -G / -P category suffix.
-    val dlt = Regex("""^(?:[A-Z0-9]{2}-)?([A-Z0-9]{3,9})(?:-([STGP]))?$""").matchEntire(raw)
-        ?: return false
-    val header = dlt.groupValues[1]
-    val category = dlt.groupValues[2]
-    if (header.none { it.isLetter() }) return false
-    if (category == "P") return false // promotional
+    // Needs at least two letters to count as a business sender code.
+    if (raw.count { it in 'A'..'Z' } < 2) return false
+
+    // Promotional header (TRAI "-P" suffix): ads, never transaction alerts.
+    if (Regex("""-P$""").containsMatchIn(raw)) return false
     return true
 }
 
@@ -579,10 +606,16 @@ private val KNOWN_MERCHANT_KEYWORDS = listOf(
     "Decathlon", "DMart", "D-Mart", "Croma", "Reliance"
 )
 
+// Long names (5+ chars) only need to START a word: card SMS cut the
+// merchant off, e.g. "FlipkartInterne" for "Flipkart Internet". Short ones
+// (Ola, Jio, KFC…) must be whole words so "Ola" never matches "Cola".
+private val KNOWN_MERCHANT_REGEXES = KNOWN_MERCHANT_KEYWORDS.map { keyword ->
+    val tail = if (keyword.length >= 5) "" else """\b"""
+    keyword to Regex("""\b${Regex.escape(keyword)}$tail""", RegexOption.IGNORE_CASE)
+}
+
 private fun knownMerchantKeyword(message: String): String? =
-    KNOWN_MERCHANT_KEYWORDS.firstOrNull { keyword ->
-        Regex("""\b${Regex.escape(keyword)}\b""", RegexOption.IGNORE_CASE).containsMatchIn(message)
-    }
+    KNOWN_MERCHANT_REGEXES.firstOrNull { (_, regex) -> regex.containsMatchIn(message) }?.first
 
 private fun extractMerchant(message: String): String {
     // "NAME credited" — the receiver's name in the "payee credited" style
@@ -611,6 +644,14 @@ private fun extractMerchant(message: String): String {
         RegexOption.IGNORE_CASE
     ).findAll(message).toList().lastOrNull()?.groupValues?.getOrNull(1)
 
+    // Card spends: "... spent using ICICI Bank Card XX1000 on 09-Oct-26 on
+    // FlipkartInterne. Avl Limit..." — the merchant follows the DATE, after
+    // a second "on" (some banks use "at"). Stops at the same boundaries.
+    val dateThenMerchant = Regex(
+        """\bon\s+\d{1,2}[-/ ](?:[a-z]{3}|\d{1,2})[-/ ]\d{2,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s+(?:on|at)\s+(.+?)$stopLookahead""",
+        RegexOption.IGNORE_CASE
+    ).find(message)?.groupValues?.getOrNull(1)
+
     // UPI reference embedding the merchant — two delimiter styles seen in the
     // wild: slash ("UPI/DR/123.../MERCHANT NAME/...", most banks) and hyphen
     // ("UPI-662052745980-Blinkit.", e.g. ICICI). Tried before the generic
@@ -637,7 +678,8 @@ private fun extractMerchant(message: String): String {
             it.replace(Regex("[^0-9]"), "").length >= 6
     }
 
-    val candidate = knownMerchantKeyword(message) ?: creditedMerchant ?: atMerchant ?: vpaMerchant ?: toMerchant
+    val candidate = knownMerchantKeyword(message) ?: creditedMerchant ?: atMerchant ?: dateThenMerchant ?:
+        vpaMerchant ?: toMerchant
     return candidate
         ?.trim()
         ?.trim('/', '-')

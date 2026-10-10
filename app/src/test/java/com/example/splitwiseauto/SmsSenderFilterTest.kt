@@ -1,5 +1,6 @@
 package com.example.splitwiseauto
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -54,5 +55,32 @@ class SmsSenderFilterTest {
         org.junit.Assert.assertEquals("130737839605", PendingPaymentMatcher.extractUpiRef12(
             "UPI:130737839605. To Block UPI send SMS"
         ))
+    }
+
+    @Test fun `unusual but genuine bank sender codes are accepted`() {
+        listOf("IDBIBANKLTD", "+JD-IDBIBK-S", "JX-IDBIBK-T1", "VM-IDBIBANK-T", "jd-idbibk-s")
+            .forEach { assertTrue(it, isTransactionalSender(it)) }
+    }
+
+    // ---- RCS / notification alerts ----
+
+    @Test fun `bank brand names from notifications are accepted`() {
+        listOf("IDBI Bank Limited", "JD-IDBIBK-S", "HDFC Bank", "SBI", "ICICI Bank Credit Card",
+            "Kotak Mahindra Bank", "Paytm", "Amazon Pay")
+            .forEach { assertTrue(it, isBankNotificationSender(it)) }
+    }
+
+    @Test fun `contacts and phone numbers from notifications are rejected`() {
+        listOf("Rahul", "Mom", "Akhil Sharma", "+91 98765 43210", "9876543210", "RAHULK", "")
+            .forEach { assertFalse(it, isBankNotificationSender(it)) }
+    }
+
+    @Test fun `same alert via SMS and RCS shares a cross-channel key`() {
+        val sms = "IDBI Bank Acct XX275 debited for Rs 20.00 on 05-Oct-26; Bal Rs 13657.46 SONAM HOTEL credited."
+        val viaNotification = sms.replace(" ", "  ") + " "
+        assertEquals(
+            SmsIngestion.crossChannelKeys(sms, null).first(),
+            SmsIngestion.crossChannelKeys(viaNotification, null).first()
+        )
     }
 }

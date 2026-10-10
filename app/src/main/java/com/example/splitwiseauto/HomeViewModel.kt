@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 data class CategorySummary(
@@ -35,6 +36,28 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _totalSpent = MutableStateFlow(0.0)
     val totalSpent: StateFlow<Double> = _totalSpent
+
+    /**
+     * The hero total together with WHICH total it is (trip + filters), emitted
+     * as ONE value so they can never disagree for a frame. null until the
+     * first load finishes. The animated counter uses it so it never animates
+     * from a placeholder 0 or from the previous filter's number.
+     */
+    private val _heroTotal = MutableStateFlow<Pair<String, Double>?>(null)
+    val heroTotal: StateFlow<Pair<String, Double>?> = _heroTotal
+
+    init {
+        // Recompute Home (and so the animated total) the moment expenses
+        // change — e.g. "Just me" from the bell or a background SMS — with the
+        // trip/filters currently shown, instead of waiting for the next resume.
+        viewModelScope.launch {
+            ExpenseRepository.changes(db.expenseDao())
+                .drop(1) // the first emission is the initial load, done by the screen
+                .collect {
+                    loadExpenses(currentTripId, currentDateFilter, currentParticipantFilter, currentSelectedFriendNames)
+                }
+        }
+    }
 
     private val _mySpent = MutableStateFlow(0.0)
     val mySpent: StateFlow<Double> = _mySpent
@@ -141,6 +164,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             // available separately for the fixed "Me" card in Friends.
             val grandTotal = data.sumOf { it.expense.amount }
             _totalSpent.value = grandTotal
+            _heroTotal.value =
+                "home_total|${tripId ?: "main"}|$dateFilter|$participantFilter|${selectedFriendNames.sorted()}" to grandTotal
 
             // One dimension only (category) — checked: no trip/location rows
             // are mixed in here. The treemap shows at most 6 tiles, so with

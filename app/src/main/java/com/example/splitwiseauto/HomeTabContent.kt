@@ -6,6 +6,7 @@ import android.app.DatePickerDialog
 import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.room.withTransaction
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
@@ -86,13 +88,18 @@ fun HomeScreen(
     friendViewModel: FriendViewModel = viewModel(),
     mapViewModel: MapViewModel = viewModel(),
     insightsViewModel: InsightsViewModel = viewModel(),
-    pendingNotificationsViewModel: PendingNotificationsViewModel = viewModel()
+    pendingNotificationsViewModel: PendingNotificationsViewModel = viewModel(),
+    // Widget deep link (e.g. "Owed to you" -> Friends). Shown once, then cleared.
+    requestedTab: Int? = null,
+    onRequestedTabShown: () -> Unit = {}
 ) {
     val expenses by homeViewModel.expenses.collectAsState()
     val total by homeViewModel.totalSpent.collectAsState()
+    val heroTotal by homeViewModel.heroTotal.collectAsState()
     val mySpent by homeViewModel.mySpent.collectAsState()
     val friends by friendViewModel.friends.collectAsState()
     val friendBalances by friendViewModel.balances.collectAsState()
+    val expenseSettlement by friendViewModel.expenseSettlement.collectAsState()
     val totalOwedToYou by friendViewModel.totalOwedToYou.collectAsState()
     val categories by homeViewModel.categorySummaries.collectAsState()
     val accountSpending by homeViewModel.accountSpending.collectAsState()
@@ -132,6 +139,8 @@ fun HomeScreen(
     var activeTripId by remember { mutableStateOf<Int?>(ActiveTripStore.getActiveTripId(context)) }
     var activeTripName by remember { mutableStateOf<String?>(ActiveTripStore.getActiveTripName(context)) }
     var showTripPicker by remember { mutableStateOf(false) }
+    var tripToDelete by remember { mutableStateOf<Trip?>(null) }
+    var tripToDeleteCount by remember { mutableStateOf(0) }
     var showNewTripDialog by remember { mutableStateOf(false) }
     var newTripName by remember { mutableStateOf("") }
 
@@ -187,6 +196,11 @@ fun HomeScreen(
     val pagerScope = rememberCoroutineScope()
     fun goToTab(index: Int) {
         pagerScope.launch { pagerState.animateScrollToPage(index) }
+    }
+    LaunchedEffect(requestedTab) {
+        val tab = requestedTab ?: return@LaunchedEffect
+        pagerState.scrollToPage(tab.coerceIn(0, 3))
+        onRequestedTabShown()
     }
     if (showAddFriendDialog) {
         AddFriendDialog(
@@ -358,6 +372,7 @@ fun HomeScreen(
             pending = pendingNotifications,
             onDismiss = { showPendingNotifications = false },
             onDismissItem = { id -> pendingNotificationsViewModel.dismiss(id) },
+            onJustMe = { id -> pendingNotificationsViewModel.justMe(id) },
             payments = recentPayments,
             onDismissPayment = { id -> pendingNotificationsViewModel.dismissPayment(id) }
         )
@@ -406,7 +421,21 @@ fun HomeScreen(
                             ) {
                                 Icon(imageVector = Icons.Filled.Place, contentDescription = null)
                                 Spacer(modifier = Modifier.width(12.dp))
-                                Text(trip.name)
+                                Text(trip.name, modifier = Modifier.weight(1f))
+                                IconButton(onClick = {
+                                    coroutineScope.launch {
+                                        tripToDeleteCount = AppDatabase.getDatabase(context)
+                                            .expenseDao().countForTrip(trip.id)
+                                        tripToDelete = trip
+                                        showTripPicker = false
+                                    }
+                                }) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Delete,
+                                        contentDescription = "Delete ${trip.name}",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
@@ -420,6 +449,36 @@ fun HomeScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showTripPicker = false }) { Text("Cancel") }
+            }
+        )
+    }
+    tripToDelete?.let { trip ->
+        DeleteTripDialog(
+            trip = trip,
+            expenseCount = tripToDeleteCount,
+            onDismiss = { tripToDelete = null },
+            onDelete = { alsoDeleteExpenses ->
+                tripToDelete = null
+                coroutineScope.launch {
+                    val database = AppDatabase.getDatabase(context)
+                    database.withTransaction {
+                        if (alsoDeleteExpenses) {
+                            database.expenseDao().deleteTripExpensesWithParticipants(trip.id)
+                        } else {
+                            database.expenseDao().detachFromTrip(trip.id)
+                        }
+                        database.tripDao().deleteById(trip.id)
+                    }
+                    trips = database.tripDao().getAll()
+                    // Deleting the trip you're in drops you back to Main.
+                    if (activeTripId == trip.id) {
+                        activeTripId = null
+                        activeTripName = null
+                        ActiveTripStore.setActiveTrip(context, null, null)
+                    }
+                    homeViewModel.loadExpenses(activeTripId, dateFilter, participantFilter, selectedFriendNames)
+                    insightsViewModel.loadExpenses(activeTripId)
+                }
             }
         )
     }
@@ -720,7 +779,9 @@ fun HomeScreen(
                     0 -> {
                         HomeTabContent(
                             expenses = expenses,
+                            settlement = expenseSettlement,
                             total = total,
+                            heroTotal = heroTotal,
                             categories = categories,
                             accountSpending = accountSpending,
                             // Derived here, not in the ViewModel — FriendViewModel already
@@ -790,7 +851,9 @@ fun HomeScreen(
 @Composable
 private fun HomeTabContent(
     expenses: List<ExpenseWithParticipants>,
+    settlement: Map<Int, SettleStatus.ExpenseSettlement> = emptyMap(),
     total: Double,
+    heroTotal: Pair<String, Double>?,
     categories: List<CategorySummary>,
     accountSpending: List<AccountSpendingSummary>,
     owedToYou: Double,
@@ -894,7 +957,8 @@ private fun HomeTabContent(
         item {
             HomeHeroCard(
                 label = if (filterActive) "TOTAL (${filterLabel.uppercase()})" else "TOTAL EXPENSES",
-                amount = total,
+                amount = heroTotal?.second ?: total,
+                counterKey = heroTotal?.first,
                 animateEntrance = playEntrance,
                 modifier = Modifier.entranceRiseFade { heroRiseProgress.value }
             )
@@ -1211,6 +1275,7 @@ private fun HomeTabContent(
                     is RecentEntry.Item -> {
                         HomeExpenseRow(
                             item = entry.item,
+                            settlement = settlement[entry.item.expense.id],
                             onTap = { onExpenseTap(entry.item) },
                             onLongPress = { onExpenseLongPress(entry.item) }
                         )
@@ -1323,6 +1388,25 @@ private object HomeTokens {
  * rolling its own "%.0f" formatting (which is how the Bills tile ended up
  * showing "₹23216" with no thousands separator).
  */
+/**
+ * "10:19 AM" for an expense's real time, or null when there isn't one:
+ * no timestamp, or a date picked by hand in older versions (saved as 12:00:00,
+ * a placeholder rather than a real time of payment).
+ */
+fun expenseTimeLabel(timestampMillis: Long?): String? {
+    if (timestampMillis == null || timestampMillis <= 0) return null
+    val c = java.util.Calendar.getInstance().apply { timeInMillis = timestampMillis }
+    val isPickedDatePlaceholder = c.get(java.util.Calendar.HOUR_OF_DAY) == 12 &&
+        c.get(java.util.Calendar.MINUTE) == 0 &&
+        c.get(java.util.Calendar.SECOND) == 0
+    if (isPickedDatePlaceholder) return null
+    return java.text.SimpleDateFormat("h:mm a", java.util.Locale.ENGLISH).format(java.util.Date(timestampMillis))
+}
+
+/** "09-Oct-26 · 10:19 AM" (or just the date when there's no real time). */
+fun expenseDateTimeLabel(date: String, timestampMillis: Long?): String =
+    expenseTimeLabel(timestampMillis)?.let { "$date · $it" } ?: date
+
 fun formatRupeeIndian(amount: Double): String {
     val rounded = kotlin.math.round(amount * 100) / 100.0
     val nf = NumberFormat.getNumberInstance(Locale("en", "IN"))
@@ -1347,6 +1431,8 @@ fun formatRupeeIndian(amount: String): String =
 private fun HomeHeroCard(
     label: String,
     amount: Double,
+    // Which total this is (trip + filters); null = not loaded yet.
+    counterKey: String?,
     animateEntrance: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -1377,11 +1463,15 @@ private fun HomeHeroCard(
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = formatRupeeIndian(amount),
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Black,
-                color = HomeTokens.onAccent()
+            // Counts from the last total you saw to the current one (only
+            // when it changed); see ExpenseCounter.kt.
+            AnimatedRupeeCounter(
+                target = amount,
+                storageKey = counterKey ?: "home_total|loading",
+                ready = counterKey != null,
+                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black),
+                color = HomeTokens.onAccent(),
+                deltaColor = HomeTokens.onAccent().copy(alpha = 0.72f)
             )
         }
     }
@@ -1604,6 +1694,7 @@ private fun MonthSpendBar(month: MonthKey?, total: Double) {
 @Composable
 private fun HomeExpenseRow(
     item: ExpenseWithParticipants,
+    settlement: SettleStatus.ExpenseSettlement? = null,
     onTap: (() -> Unit)? = null,
     onLongPress: (() -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -1663,24 +1754,35 @@ private fun HomeExpenseRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (isSplit) {
+                    if (isSplit || settlement != null) {
+                        // SPLIT → PART PAID → SETTLED as friends pay back
+                        // (derived from Friends balances, oldest splits first).
+                        val (chipText, chipColor) = when (settlement?.state) {
+                            SettleStatus.State.SETTLED -> "SETTLED" to com.example.splitwiseauto.ui.theme.positiveColor()
+                            SettleStatus.State.PARTIAL -> "PART PAID" to warnColor()
+                            else -> "SPLIT" to HomeTokens.accent()
+                        }
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(
                             shape = RoundedCornerShape(50),
-                            color = HomeTokens.accentSoft()
+                            color = chipColor.copy(alpha = 0.14f)
                         ) {
                             Text(
-                                text = "SPLIT",
+                                text = chipText,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = HomeTokens.accent(),
+                                color = chipColor,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                             )
                         }
                     }
                 }
                 Text(
-                    text = "${item.expense.date} · ${item.participants.joinToString(" + ") { it.personName }}",
+                    text = "${expenseDateTimeLabel(item.expense.date, item.expense.timestampMillis)} · " +
+                        item.participants.joinToString(" + ") { it.personName } +
+                        if (settlement?.state == SettleStatus.State.PARTIAL) {
+                            " · ${formatRupeeIndian(settlement.remaining)} left"
+                        } else "",
                     style = MaterialTheme.typography.labelSmall,
                     color = HomeTokens.mut(),
                     maxLines = 1,
@@ -1873,7 +1975,7 @@ fun ExpenseCard(
                 )
 
                 Text(
-                    text = item.expense.date,
+                    text = expenseDateTimeLabel(item.expense.date, item.expense.timestampMillis),
                     style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -2418,4 +2520,56 @@ private fun FilterPill(
             }
         }
     }
+}
+
+
+/**
+ * Delete a trip. Safe default: its expenses are KEPT and move to Main
+ * (they were only ever tagged with the trip). Deleting them too is an
+ * explicit opt-in, because that also changes friend balances.
+ */
+@Composable
+private fun DeleteTripDialog(
+    trip: Trip,
+    expenseCount: Int,
+    onDismiss: () -> Unit,
+    onDelete: (alsoDeleteExpenses: Boolean) -> Unit
+) {
+    var alsoDeleteExpenses by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete \"${trip.name}\"?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    if (expenseCount == 0) "This trip has no expenses."
+                    else if (alsoDeleteExpenses) "Its $expenseCount expense${if (expenseCount == 1) "" else "s"} " +
+                        "will be deleted too. Balances with friends from those splits will change."
+                    else "Its $expenseCount expense${if (expenseCount == 1) "" else "s"} will be kept " +
+                        "and moved to Main. Nothing is lost.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (expenseCount > 0) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { alsoDeleteExpenses = !alsoDeleteExpenses }
+                    ) {
+                        Checkbox(checked = alsoDeleteExpenses, onCheckedChange = { alsoDeleteExpenses = it })
+                        Text("Also delete its expenses", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onDelete(alsoDeleteExpenses) }) {
+                Text(
+                    if (alsoDeleteExpenses) "Delete trip & expenses" else "Delete trip",
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

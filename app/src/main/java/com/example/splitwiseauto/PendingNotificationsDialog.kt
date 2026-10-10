@@ -25,6 +25,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,18 +44,27 @@ fun PendingNotificationsDialog(
     pending: List<PendingExpenseNotification>,
     onDismiss: () -> Unit,
     onDismissItem: (Int) -> Unit,
+    onJustMe: (Int) -> Unit = {},
     // Scan & Pay payments that still need attention. Tap opens the payment's
     // status screen (check SMS again / mark as paid); × removes it.
     payments: List<PendingPayment> = emptyList(),
     onDismissPayment: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
+    var showSmsCheck by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (showSmsCheck) {
+        SmsCheckSheet(onDismiss = { showSmsCheck = false })
+    }
 
     AppSheet(
         title = "Missed expenses",
         onDismiss = onDismiss,
         trailing = { TextButton(onClick = onDismiss) { Text("Close") } }
     ) {
+        // Always available: diagnose / recover bank SMS the app didn't pick up.
+        TextButton(onClick = { showSmsCheck = true }) {
+            Text("Bank SMS not showing up? Check recent SMS")
+        }
         if (pending.isEmpty() && payments.isEmpty()) {
             Text(
                 text = "Nothing pending — you're all caught up.",
@@ -86,7 +97,8 @@ fun PendingNotificationsDialog(
                             context.startActivity(intent)
                             onDismiss()
                         },
-                        onDismiss = { onDismissItem(item.id) }
+                        onDismiss = { onDismissItem(item.id) },
+                        onJustMe = { onJustMe(item.id) }
                     )
                 }
             }
@@ -179,7 +191,8 @@ private fun PaymentAttentionRow(payment: PendingPayment, onOpen: () -> Unit, onR
 private fun PendingNotificationRow(
     item: PendingExpenseNotification,
     onReview: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onJustMe: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -225,10 +238,12 @@ private fun PendingNotificationRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            // Tap the card = Split. Quick outcomes on the right.
+            TextButton(onClick = onJustMe) { Text("Just me") }
             IconButton(onClick = onDismiss) {
                 Icon(
                     imageVector = Icons.Filled.Close,
-                    contentDescription = "Dismiss",
+                    contentDescription = "Ignore",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
