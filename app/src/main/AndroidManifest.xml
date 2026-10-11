@@ -93,7 +93,11 @@
 
         <receiver
             android:name=".SmsReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <!-- SPL-SEC-002: only the telephony stack holds BROADCAST_SMS, so
+                 other apps on the phone can no longer send this receiver a
+                 forged "bank SMS". Real incoming SMS are unaffected. -->
 
             <intent-filter>
                 <action android:name="android.provider.Telephony.SMS_RECEIVED" />
