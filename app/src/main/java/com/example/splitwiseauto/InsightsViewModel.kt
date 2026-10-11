@@ -65,8 +65,18 @@ data class SpendTrendUiState(
     val excludedTripLabel: String? = null,
     // Current month in Main mode, but no regular spending to project from.
     val notEnoughToProject: Boolean = false,
-    val isTripMode: Boolean = false
+    val isTripMode: Boolean = false,
+    // Regular (non-trip) part of the month-end projection, shown as the
+    // breakdown under "On pace for …" when a trip is added on top.
+    val regularProjection: Double? = null,
+    // What the same days of last month added up to (the % badge's baseline).
+    val previousComparableTotal: Double = 0.0,
+    // "Oct" — for the tapped-day label on the chart.
+    val monthShortName: String = ""
 )
+
+/** Below this, "vs last month" is meaningless (+18693% from ₹370), so it's hidden. */
+private const val MIN_COMPARISON_BASELINE = 1_000.0
 
 class InsightsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -266,7 +276,12 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
         } else {
             InsightsMath.pace(totalSoFar - tripSpendInMonth, daysElapsed, daysInMonth, isCurrentMonth)
         }
-        val projectedMonthEnd = pace.projectedMonthEnd
+        // Month-end estimate = regular pace for the whole month + the trip
+        // money already spent (a trip is a one-off: it isn't extrapolated,
+        // but it IS part of what the month will cost). Shown next to a
+        // "spent so far" that includes the trip, so the two now agree.
+        val regularProjection = pace.projectedMonthEnd
+        val projectedMonthEnd = regularProjection?.let { it + tripSpendInMonth }
 
         // Compared over the same number of elapsed days in the previous month,
         // so a mid-month reading isn't measured against a full previous month.
@@ -279,7 +294,9 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
             if (dayOfMonth in 1..daysElapsed) item.expense.amount else 0.0
         }
 
-        val percentChange = if (previousComparableTotal > 0.0) {
+        // A tiny baseline (e.g. the app was only installed late last month)
+        // gives meaningless numbers like "+18693%", so no badge below ₹1,000.
+        val percentChange = if (previousComparableTotal >= MIN_COMPARISON_BASELINE) {
             ((totalSoFar - previousComparableTotal) / previousComparableTotal) * 100.0
         } else {
             null
@@ -298,6 +315,10 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
             excludedTripSpend = tripSpendInMonth,
             excludedTripLabel = excludedTripLabel,
             notEnoughToProject = !isTripMode && isCurrentMonth && projectedMonthEnd == null,
+            regularProjection = regularProjection,
+            previousComparableTotal = previousComparableTotal,
+            monthShortName = java.text.SimpleDateFormat("MMM", java.util.Locale.ENGLISH)
+                .format(month.monthStartCalendar().time),
             isTripMode = isTripMode
         )
     }

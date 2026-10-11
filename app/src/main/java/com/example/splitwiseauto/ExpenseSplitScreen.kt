@@ -669,44 +669,12 @@ private fun ParticipantCard(
 
                         Spacer(modifier = Modifier.width(8.dp))
 
-                        OutlinedTextField(
-                            value =
-                            if (amount == 0.0)
-                                ""
-                            else
-                                "%.2f".format(amount),
-
-                            onValueChange = { value ->
-
-                                val parsed =
-                                    value
-                                        .replace(",", "")
-                                        .toDoubleOrNull()
-
-                                if (parsed != null) {
-                                    onAmountChange(parsed)
-                                }
-
-                                if (value.isBlank()) {
-                                    onAmountChange(0.0)
-                                }
-                            },
-
+                        WiseAmountFieldFor(
+                            amount = amount,
+                            onAmountChange = { onAmountChange(it) },
                             modifier = Modifier
                                 .weight(1f)
-                                .widthIn(min = 0.dp),
-
-                            label = {
-                                Text("Amount")
-                            },
-
-                            singleLine = true,
-
-                            keyboardOptions =
-                            KeyboardOptions(
-                                keyboardType =
-                                KeyboardType.Decimal
-                            )
+                                .widthIn(min = 0.dp)
                         )
 
                         Spacer(modifier = Modifier.width(8.dp))

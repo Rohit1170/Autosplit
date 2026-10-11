@@ -140,7 +140,7 @@ class FriendViewModel : ViewModel() {
     // before. Passing an amount (e.g. "they only gave me half in cash")
     // records a PARTIAL settlement instead — the rest stays outstanding and
     // shows up again on the next screen refresh.
-    fun settleUp(friend: Friend, amount: Double? = null) {
+    fun settleUp(friend: Friend, amount: Double? = null, onSaved: ((settlementId: Int) -> Unit)? = null) {
         val balance = _balances.value[friend.id] ?: return
         val net = balance.netAmount
         if (kotlin.math.abs(net) <= 0.01) return
@@ -157,9 +157,18 @@ class FriendViewModel : ViewModel() {
         if (kotlin.math.abs(settleAmount) <= 0.01) return
 
         viewModelScope.launch {
-            settlementDao.insert(
+            val id = settlementDao.insert(
                 Settlement(friendId = friend.id, amount = settleAmount)
-            )
+            ).toInt()
+            refresh()
+            onSaved?.invoke(id)
+        }
+    }
+
+    /** Undo a settle-up made a moment ago (the "Undo" link after swiping). */
+    fun undoSettlement(settlementId: Int) {
+        viewModelScope.launch {
+            settlementDao.deleteById(settlementId)
             refresh()
         }
     }

@@ -14,6 +14,9 @@ data class CategorySummary(
     val percent: Int
 )
 
+/** Subtitle of the merged Slice card (payments without an account number). */
+const val SLICE_BANK_LABEL = "UPI payments"
+
 data class AccountSpendingSummary(
     val bank: String,
     val accountIdentifier: String?,
@@ -189,7 +192,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 .map { it.expense }
                 // Manual cash is intentionally not presented as a bank/card account.
                 .filterNot { it.bank.equals("Cash", ignoreCase = true) && it.accountIdentifier == null }
-                .groupBy { expense -> expense.bank to expense.accountIdentifier }
+                // Payments with no card/account number are the Slice app's
+                // UPI payments (any bank) — one "Slice" card, not one per bank.
+                .groupBy { expense ->
+                    if (expense.accountIdentifier == null) SLICE_BANK_LABEL to null
+                    else expense.bank to expense.accountIdentifier
+                }
                 .map { (key, expensesForAccount) ->
                     AccountSpendingSummary(
                         bank = key.first,

@@ -245,6 +245,7 @@ class QrScanActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DisplayRefresh.requestHighest(this) // 90/120 Hz where the screen supports it
         inFlightPaymentId = savedInstanceState?.getString(STATE_IN_FLIGHT_ID)
             ?: intent.getStringExtra(EXTRA_PAYMENT_ID)
         upiAppName = savedInstanceState?.getString(STATE_UPI_APP_NAME)
@@ -1077,8 +1078,22 @@ private fun CameraViewfinder(
                 val preview = Preview.Builder().build().also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
+                // Default analysis frames are only ~640x480: a QR shown on
+                // another phone's screen is then too small/blurry to decode
+                // (the same QR from the gallery worked). Ask for ~720p.
                 val analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setResolutionSelector(
+                        androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                            .setResolutionStrategy(
+                                androidx.camera.core.resolutionselector.ResolutionStrategy(
+                                    android.util.Size(1280, 720),
+                                    androidx.camera.core.resolutionselector.ResolutionStrategy
+                                        .FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                                )
+                            )
+                            .build()
+                    )
                     .build()
                     .also { imageAnalysis ->
                         imageAnalysis.setAnalyzer(executor) { imageProxy ->
@@ -1299,16 +1314,12 @@ private fun PaymentReviewScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        OutlinedTextField(
+                        WiseAmountField(
                             value = amountText,
                             onValueChange = { amountText = it; errorText = null },
                             enabled = !launching,
-                            placeholder = { Text("0") },
-                            leadingIcon = { Text("₹", style = MaterialTheme.typography.titleLarge) },
-                            textStyle = MaterialTheme.typography.headlineSmall,
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                            label = "Amount",
+                            modifier = Modifier.padding(top = 6.dp)
                         )
                     }
 
@@ -1327,12 +1338,11 @@ private fun PaymentReviewScreen(
                             modifier = Modifier.padding(top = 2.dp)
                         )
                     } else {
-                        OutlinedTextField(
+                        ModernTextField(
                             value = remarks,
                             onValueChange = { if (it.length <= REMARKS_MAX) remarks = it },
                             enabled = !launching,
-                            label = { Text("Remarks (optional)") },
-                            singleLine = true,
+                            label = "Remarks (optional)",
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -1548,7 +1558,10 @@ private fun PaymentStatusScreen(
                 else "Confirming payment…" to "Waiting for bank confirmation…"
             PendingPaymentStatus.FAILED ->
                 if (paidViaUssd) "Payment cancelled" to "This *99# payment to $payee was cancelled."
-                else "Payment failed" to "${appName.replaceFirstChar { it.uppercase() }} reported that the payment to $payee didn't go through."
+                else "Payment failed" to "${appName.replaceFirstChar { it.uppercase() }} reported that the payment to $payee didn't go through. " +
+                    "No money was taken. Some UPI apps (often Google Pay) block payments to personal UPI IDs " +
+                    "started from another app. Try PhonePe, Paytm or BHIM, use *99#, or pay inside your UPI " +
+                    "app directly. Splitlee still picks up the bank SMS."
             PendingPaymentStatus.UNVERIFIED ->
                 "$amountText paid to $payee" to "Not yet verified by your bank SMS"
             PendingPaymentStatus.UNCONFIRMED ->
@@ -1919,10 +1932,23 @@ private fun decodeQrFromImage(context: Context, uri: Uri): String? {
                 reader.reset()
                 reader.decode(BinaryBitmap(GlobalHistogramBinarizer(source)), hints).text
             }.getOrNull()
+            ?: runCatching {
+                // Light-on-dark QR (dark-mode screenshots).
+                reader.reset()
+                reader.decode(BinaryBitmap(HybridBinarizer(source.invert())), hints).text
+            }.getOrNull()
     } catch (e: Exception) {
         null
     }
 }
+
+private val QR_HINTS = mapOf(
+    DecodeHintType.TRY_HARDER to true,
+    DecodeHintType.POSSIBLE_FORMATS to listOf(com.google.zxing.BarcodeFormat.QR_CODE),
+    DecodeHintType.CHARACTER_SET to "UTF-8"
+)
+
+@Volatile private var frameCounter = 0
 
 /** Decodes a single camera frame's luma plane into QR text, or null if none is found. */
 private fun decodeQr(imageProxy: ImageProxy, reader: QRCodeReader): String? {
@@ -1960,24 +1986,35 @@ private fun decodeQr(imageProxy: ImageProxy, reader: QRCodeReader): String? {
             }
         }
 
-        val source = PlanarYUVLuminanceSource(
-            bytes,
-            width,
-            height,
-            0,
-            0,
-            width,
-            height,
-            false
+        val full = PlanarYUVLuminanceSource(bytes, width, height, 0, 0, width, height, false)
+        // Centre square (where the on-screen frame is): makes a small QR
+        // fill more of the image, which helps a lot with phone screens.
+        val side = (minOf(width, height) * 0.75).toInt()
+        val center = PlanarYUVLuminanceSource(
+            bytes, width, height, (width - side) / 2, (height - side) / 2, side, side, false
         )
-        val bitmap = BinaryBitmap(HybridBinarizer(source))
-        // TRY_HARDER trades a little extra decode time (still cheap for a
-        // single QR-sized frame) for meaningfully better detection when
-        // the code isn't perfectly framed/lit — worth it since this only
-        // runs while actively scanning.
-        val hints = mapOf(DecodeHintType.TRY_HARDER to true)
-        val result: Result = reader.decode(bitmap, hints)
-        result.text
+        frameCounter = (frameCounter + 1) % 3
+        // Cheap tries every frame; inverted (light-on-dark QR, e.g. dark-mode
+        // payment apps) and the global binarizer (screen glare / moiré)
+        // every third frame to keep scanning smooth.
+        val attempts = buildList<com.google.zxing.Binarizer> {
+            add(HybridBinarizer(full))
+            add(HybridBinarizer(center))
+            if (frameCounter == 0) {
+                add(HybridBinarizer(full.invert()))
+                add(GlobalHistogramBinarizer(center))
+                add(HybridBinarizer(center.invert()))
+            }
+        }
+        attempts.firstNotNullOfOrNull { binarizer ->
+            try {
+                reader.decode(BinaryBitmap(binarizer), QR_HINTS).text
+            } catch (e: Exception) {
+                null
+            } finally {
+                reader.reset()
+            }
+        }
     } catch (e: NotFoundException) {
         null
     } catch (e: FormatException) {

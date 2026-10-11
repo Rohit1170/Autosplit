@@ -50,6 +50,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -91,6 +92,7 @@ class ExpenseConfirmationActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DisplayRefresh.requestHighest(this) // 90/120 Hz where the screen supports it
         CustomCategories.ensureLoaded(this)
 
         database = AppDatabase.getDatabase(this)
@@ -160,11 +162,16 @@ class ExpenseConfirmationActivity : ComponentActivity() {
         }
     }
 
+    /** Brief success moment (check + pulse) shown after saving, before closing. */
+    private var savedFlash by androidx.compose.runtime.mutableStateOf<String?>(null)
+    private var saving = false
+
     private fun showExpenseConfirmation(initialSelectedAmounts: Map<String, Double>) {
         setContent {
 
             SplitWiseAutoTheme {
 
+                androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -201,6 +208,8 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                         }
                     )
                 }
+                savedFlash?.let { message -> SavedOverlay(message) }
+                }
             }
         }
     }
@@ -208,6 +217,9 @@ class ExpenseConfirmationActivity : ComponentActivity() {
     private fun saveExpense(
         selectedAmounts: Map<String, Double>
     ) {
+        // One save per screen: ignore extra taps while saving / showing the check.
+        if (saving) return
+        saving = true
 
         lifecycleScope.launch {
 
@@ -321,6 +333,14 @@ class ExpenseConfirmationActivity : ComponentActivity() {
             // fire a second time, silently duplicating the expense.
             // finishAndRemoveTask() tears the whole task down immediately,
             // so there's nothing left in Recents to reopen.
+            // Success moment, then close (skipped with "Remove animations").
+            if (!reducedMotion(this@ExpenseConfirmationActivity)) {
+                val friendsInSplit = selectedAmounts.keys.count { !it.equals("Me", ignoreCase = true) }
+                savedFlash = if (friendsInSplit > 0) {
+                    "Split with $friendsInSplit ${if (friendsInSplit == 1) "friend" else "friends"}"
+                } else "Expense saved"
+                kotlinx.coroutines.delay(SAVED_FLASH_MS)
+            }
             finishAndRemoveTask()
         }
 
@@ -968,54 +988,10 @@ private fun ParticipantTile(
                     )
 
 
-                    OutlinedTextField(
-                        value =
-                        if (amount == 0.0)
-                            ""
-                        else
-                            String.format(
-                                Locale.US,
-                                "%.2f",
-                                amount
-                            ),
-
-                        onValueChange = { value ->
-
-                            val cleanValue =
-                                value.replace(",", "")
-
-                            val parsed =
-                                cleanValue.toDoubleOrNull()
-
-                            if (parsed != null) {
-
-                                onAmountChanged(
-                                    parsed
-                                )
-                            }
-
-                            if (cleanValue.isBlank()) {
-
-                                onAmountChanged(
-                                    0.0
-                                )
-                            }
-                        },
-
-                        modifier =
-                        Modifier.fillMaxWidth(),
-
-                        label = {
-                            Text("Share amount")
-                        },
-
-                        singleLine = true,
-
-                        keyboardOptions =
-                        KeyboardOptions(
-                            keyboardType =
-                            KeyboardType.Decimal
-                        )
+                    WiseAmountFieldFor(
+                        amount = amount,
+                        onAmountChange = { onAmountChanged(it) },
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
@@ -1081,3 +1057,45 @@ private fun formatMoney(
 
     return formatRupeeIndian(amount)
 }
+
+
+/**
+ * How long the "saved" check stays on screen before the split screen closes.
+ * The check itself takes ~970 ms to draw (ring 650 ms + tick 320 ms), so
+ * this leaves ~730 ms of the finished tick on screen. Change this one
+ * number to make it shorter/longer.
+ */
+private const val SAVED_FLASH_MS = 1_700L
+
+/** Dimmed full-screen layer with the drawn check + pulse; blocks taps. */
+@androidx.compose.runtime.Composable
+private fun SavedOverlay(message: String) {
+    androidx.compose.foundation.layout.Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(androidx.compose.ui.graphics.Color(0xCC0B1210))
+            .pointerInputBlocker(),
+        contentAlignment = androidx.compose.ui.Alignment.Center
+    ) {
+        androidx.compose.foundation.layout.Column(
+            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+        ) {
+            SuccessBurst(fraction = 1f, celebrate = false, diameter = 150.dp)
+            androidx.compose.material3.Text(
+                text = message,
+                style = MaterialTheme.typography.titleMedium,
+                color = androidx.compose.ui.graphics.Color.White
+            )
+        }
+    }
+}
+
+/** Swallows every touch so nothing underneath can be tapped during the flash. */
+private fun Modifier.pointerInputBlocker(): Modifier =
+    this.pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) {
+                awaitPointerEvent().changes.forEach { it.consume() }
+            }
+        }
+    }

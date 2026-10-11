@@ -122,6 +122,18 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/splitlee_widget_info" />
         </receiver>
+        <!-- Widget theme picker: opened when the widget is customised
+             (long-press → edit on Android 12+) and from the app. -->
+        <activity
+            android:name=".WidgetThemeActivity"
+            android:exported="true"
+            android:label="Widget theme"
+            android:theme="@style/Theme.SplitWiseAuto">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <!-- Reads bank alerts from messaging-app notifications (RCS bank
              messages never reach the SMS inbox). Only active after the user
              turns on Notification access for Splitlee. -->

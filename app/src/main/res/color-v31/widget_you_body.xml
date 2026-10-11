@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark glass in the wallpaper's own neutral tone (Material You). -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:alpha="0.92" android:color="@android:color/system_neutral2_900" />
+</selector>

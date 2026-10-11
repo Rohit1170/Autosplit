@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splitlee glass tinted with the wallpaper's main colour. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:alpha="0.90" android:color="@android:color/system_accent1_900" />
+</selector>

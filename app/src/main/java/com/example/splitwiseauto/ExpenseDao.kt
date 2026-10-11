@@ -43,6 +43,12 @@ interface ExpenseDao {
     @Query("UPDATE expenses SET category = :to WHERE category = :from")
     suspend fun recategorize(from: String, to: String)
 
+    @Query("SELECT * FROM expenses WHERE category = :category")
+    suspend fun getByCategory(category: String): List<Expense>
+
+    @Query("UPDATE expenses SET category = :category WHERE id = :id")
+    suspend fun updateCategory(id: Int, category: String)
+
     @Query("UPDATE expenses SET payer = :newName WHERE payer = :oldName")
     suspend fun renamePayer(oldName: String, newName: String)
 

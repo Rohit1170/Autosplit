@@ -76,6 +76,7 @@ class ExpenseDetailActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DisplayRefresh.requestHighest(this) // 90/120 Hz where the screen supports it
         CustomCategories.ensureLoaded(this)
 
         database = AppDatabase.getDatabase(this)

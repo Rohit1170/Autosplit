@@ -184,7 +184,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DisplayRefresh.requestHighest(this) // 90/120 Hz where the screen supports it
         CustomCategories.ensureLoaded(this)
+
+        // One-time, silent: sort old "Other" expenses with the newer category rules.
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            MerchantCategorizer.recheckOtherExpensesOnce(applicationContext)
+        }
 
         requestRequiredPermissions()
 
@@ -331,17 +337,13 @@ fun ExpenseTrackerScreen() {
                 modifier = Modifier.height(20.dp)
             )
 
-            OutlinedTextField(
+            ModernTextField(
                 value = smsText,
-                onValueChange = {
-                    smsText = it
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(180.dp),
-                label = {
-                    Text("Paste bank SMS")
-                }
+                onValueChange = { smsText = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "Paste bank SMS",
+                singleLine = false,
+                height = 180.dp
             )
 
             Spacer(

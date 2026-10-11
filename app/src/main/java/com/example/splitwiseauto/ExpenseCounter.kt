@@ -1,10 +1,9 @@
 package com.example.splitwiseauto
 
 import android.content.Context
-import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -30,8 +29,9 @@ import kotlin.math.roundToLong
 
 /**
  * Splitlee's signature total: when the number has changed since it was last
- * shown, it counts smoothly from the old value to the new one (500–900 ms,
- * ease-out), then shows a quiet "+₹170" for a moment. Unchanged = instant.
+ * shown, the digits that changed roll like an odometer (550–850 ms,
+ * ease-out; see RollingText), then a quiet "+₹170" shows for a moment.
+ * Unchanged = instant. The roll animates in the draw phase only.
  *
  * - Remembers the last shown value per [storageKey] (SharedPreferences), so
  *   it survives navigation, process death and restarts.
@@ -40,7 +40,6 @@ import kotlin.math.roundToLong
  *   other total in the app).
  * - Indian grouping via [formatRupeeIndian]; tabular figures so digits that
  *   don't change stay perfectly still, and the ₹ never moves.
- * - Only this composable recomposes per frame (~40 frames, then idle).
  *
  * [ready] must be false until [target] is the real value for [storageKey]
  * (avoids animating from a placeholder 0).
@@ -59,45 +58,37 @@ fun AnimatedRupeeCounter(
     val store = remember { CounterStore(context) }
     val targetRupees = target.roundToLong()
 
-    // What is on screen right now. Starts at the last value the user saw for
-    // this key (or null = never shown → snap to the real value).
-    var shown by remember(storageKey) { mutableStateOf(store.lastShown(storageKey)) }
+    // What's on screen. NOT keyed by storageKey: switching month/filter spins
+    // from the number you were looking at to the new one.
+    var displayed by remember { mutableStateOf<Long?>(null) }
+    var lastKey by remember { mutableStateOf<String?>(null) }
     // While the real total is still loading (cold start), keep showing the
     // last total the user saw instead of a placeholder ₹0.
     val loadingValue = remember { store.lastShownAnywhere() }
-    var delta by remember(storageKey) { mutableStateOf<Long?>(null) }
+    var delta by remember { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(storageKey, targetRupees, ready) {
         if (!ready) return@LaunchedEffect
-        val from = shown
-        if (from == null || from == targetRupees || reducedMotion(context)) {
-            shown = targetRupees
-            store.save(storageKey, targetRupees)
-            return@LaunchedEffect
-        }
-        val change = targetRupees - from
-        delta = change
-        // Bigger jumps get a little longer, within 500–900 ms.
-        val duration = (500 + 90 * log10(abs(change).toDouble() + 1)).toInt().coerceIn(500, 900)
-        animate(0f, 1f, animationSpec = tween(duration, easing = FastOutSlowInEasing)) { p, _ ->
-            shown = from + (change * p.toDouble()).roundToLong()
-        }
-        shown = targetRupees // exact landing, whatever the float maths did
+        val viewChanged = lastKey != null && lastKey != storageKey
+        val from = displayed ?: store.lastShown(storageKey) ?: loadingValue
+        lastKey = storageKey
         store.save(storageKey, targetRupees)
-        delay(2_500)
-        delta = null
+        displayed = targetRupees
+        // "+₹170" only for real changes in the same view, not month switches.
+        if (from != null && from != targetRupees && !viewChanged && !reducedMotion(context)) {
+            delta = targetRupees - from
+            delay(2_400)
+            delta = null
+        } else {
+            delta = null
+        }
     }
 
     Row(modifier = modifier, verticalAlignment = Alignment.Bottom) {
-        val onScreen = if (!ready) loadingValue ?: targetRupees else shown ?: targetRupees
-        Text(
-            text = formatRupeeIndian(onScreen.toDouble()),
-            // "tnum": every digit the same width, so the number doesn't jiggle
-            // while counting and untouched digits stay exactly where they are.
-            style = style.copy(fontFeatureSettings = "tnum"),
-            color = color,
-            maxLines = 1
-        )
+        // "tnum": every digit the same width, so the reels line up.
+        val numberStyle = style.copy(fontFeatureSettings = "tnum")
+        val onScreen = displayed ?: if (!ready) loadingValue ?: targetRupees else store.lastShown(storageKey) ?: targetRupees
+        SpinningRupee(value = onScreen, style = numberStyle, color = color)
         AnimatedVisibility(visible = delta != null, enter = fadeIn(), exit = fadeOut()) {
             val d = delta ?: 0L
             Text(
@@ -109,10 +100,6 @@ fun AnimatedRupeeCounter(
         }
     }
 }
-
-/** "Remove animations" (Android accessibility) sets the animator scale to 0. */
-private fun reducedMotion(context: Context): Boolean =
-    Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
 
 /** Last total the user actually saw, per screen/filter context. */
 private class CounterStore(context: Context) {

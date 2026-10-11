@@ -33,19 +33,13 @@ fun AddFriendDialog(
 
         text = {
 
-            OutlinedTextField(
+            ModernTextField(
                 value = name,
-                onValueChange = {
-                    name = it
-                },
+                onValueChange = { name = it },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = {
-                    Text("Friend name")
-                },
-                placeholder = {
-                    Text("e.g. Rahul")
-                }
+                label = "Friend name",
+                placeholder = "e.g. Rahul",
+                autoFocus = true
             )
         },
 

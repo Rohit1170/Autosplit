@@ -48,7 +48,7 @@
             android:src="@drawable/ic_widget_add" />
     </LinearLayout>
 
-    <!-- Middle: month total + comparison | Transactions | Daily average.
+    <!-- Middle: month total + comparison | Spent today | Daily average.
          Tiles are horizontal (icon left, value over label right) and fill the
          row's height, like the design; text auto-shrinks instead of clipping. -->
     <LinearLayout
@@ -91,11 +91,14 @@
                 android:textColor="#FFFFFF"
                 android:textSize="32sp" />
 
+            <!-- Shrinks to fit instead of being cut off ("▲ ₹5,879 vs yesterday"). -->
             <TextView
                 android:id="@+id/widget_vs_yesterday"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
+                android:layout_height="17dp"
+                android:autoSizeMaxTextSize="12sp"
+                android:autoSizeMinTextSize="8sp"
+                android:autoSizeTextType="uniform"
                 android:fontFamily="sans-serif-medium"
                 android:maxLines="1"
                 android:text="Same as yesterday"
@@ -149,7 +152,7 @@
                     android:autoSizeMinTextSize="8sp"
                     android:autoSizeTextType="uniform"
                     android:maxLines="1"
-                    android:text="Transactions"
+                    android:text="Spent today"
                     android:textColor="#A9B5AF"
                     android:textSize="11sp" />
             </LinearLayout>

@@ -14,7 +14,6 @@ import java.util.UUID
 object UpiIntentPayments {
 
     const val CURRENCY_INR = "INR"
-    private const val DEFAULT_NOTE = "Splitlee payment"
 
     /**
      * Our own transaction reference, sent as `tr`. Alphanumeric only and
@@ -25,34 +24,56 @@ object UpiIntentPayments {
         "SWA" + UUID.randomUUID().toString().replace("-", "").take(24).uppercase()
 
     /**
-     * Builds the `upi://pay` URI to launch.
+     * Builds the `upi://pay` URI to launch, starting from the QR exactly as
+     * scanned ([UpiPaymentRequest.raw]) and adding only what is missing:
      *
-     * - `pa` / `pn` come from the scanned QR, unchanged.
-     * - `am`: the QR's own amount if it had one, otherwise [billAmountMinor]
-     *   (the amount of the bill being paid / entered on screen).
-     * - `tn`: the QR's own note if it had one, otherwise [billNote], otherwise a
-     *   generic note.
-     * - `tr`: ALWAYS our [paymentRef], overriding anything in the QR, so the
-     *   payment can be tied back to its PendingPayment row.
-     * - `cu`: always INR.
+     * - `am` only when the QR has no amount (the amount entered on screen).
+     * - `cu=INR` only when absent.
+     * - `tn` only when the QR has none AND the user typed a note.
+     * - NEVER our own `tr` and never an overwritten field: a payee's own
+     *   `tr`/`mc`/`sign` must reach the UPI app untouched. Google Pay
+     *   declines intent payments whose merchant fields were stripped or
+     *   whose `tr` was replaced (it shows "exceeded the bank limit").
+     *
+     * [paymentRef] is kept for our own PendingPayment row only; matching the
+     * bank SMS uses the amount, time and bank reference, not `tr`.
+     * Signed QRs (`sign=`) are passed through without any additions.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun buildPayUri(
         qr: UpiPaymentRequest,
         billAmountMinor: Long,
         billNote: String?,
         paymentRef: String
     ): Uri {
-        val amountMinor = qr.amount?.let { rupeesToMinor(it) } ?: billAmountMinor
-        val note = qr.note ?: billNote?.takeIf { it.isNotBlank() } ?: DEFAULT_NOTE
+        if (qr.raw.isBlank()) return buildFromFields(qr, billAmountMinor, billNote)
 
+        val query = qr.raw.substringAfter('?', "")
+        val pairs = query.split('&').filter { it.isNotBlank() }.toMutableList()
+        val keys = pairs.map { it.substringBefore('=').lowercase() }.toSet()
+        val signed = "sign" in keys
+
+        if (!signed) {
+            if ("am" !in keys) pairs += "am=" + minorToRupeeText(billAmountMinor)
+            if ("cu" !in keys) pairs += "cu=$CURRENCY_INR"
+            val note = billNote?.trim()?.takeIf { it.isNotEmpty() }
+            if ("tn" !in keys && note != null) pairs += "tn=" + Uri.encode(note)
+        }
+        return Uri.parse("upi://pay?" + pairs.joinToString("&"))
+    }
+
+    /** Fallback for requests that didn't come from a scanned QR. */
+    private fun buildFromFields(qr: UpiPaymentRequest, billAmountMinor: Long, billNote: String?): Uri {
+        val amountMinor = qr.amount?.let { rupeesToMinor(it) } ?: billAmountMinor
         return Uri.Builder()
             .scheme("upi")
             .authority("pay")
             .appendQueryParameter("pa", qr.vpa)
             .apply { qr.payeeName?.let { appendQueryParameter("pn", it) } }
             .appendQueryParameter("am", minorToRupeeText(amountMinor))
-            .appendQueryParameter("tn", note)
-            .appendQueryParameter("tr", paymentRef)
+            .apply {
+                (qr.note ?: billNote?.takeIf { it.isNotBlank() })?.let { appendQueryParameter("tn", it) }
+            }
             .appendQueryParameter("cu", CURRENCY_INR)
             .build()
     }

@@ -15,6 +15,7 @@ import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -35,9 +36,12 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Place
@@ -59,6 +63,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.unit.sp
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -116,11 +125,17 @@ fun HomeScreen(
     }
     var expenseForActions by remember { mutableStateOf<ExpenseWithParticipants?>(null) }
     var friendForActions by remember { mutableStateOf<Friend?>(null) }
+    var friendToSettle by remember { mutableStateOf<Friend?>(null) }
     var friendToRename by remember { mutableStateOf<Friend?>(null) }
     var friendForHistory by remember { mutableStateOf<Friend?>(null) }
     var settlementBeingCorrected by remember { mutableStateOf<Settlement?>(null) }
     var showFilterDialog by remember { mutableStateOf(false) }
-    var dateFilter by remember { mutableStateOf(DateFilter()) }
+    // Home shows one month (default: this month) or all time — picked from
+    // the month chip in the header and remembered between app opens.
+    val periodContext = LocalContext.current
+    var dateFilter by remember { mutableStateOf(HomePeriodStore.load(periodContext)) }
+    val homeMonths by insightsViewModel.availableMonths.collectAsState()
+    var showMonthMenu by remember { mutableStateOf(false) }
     var participantFilter by remember { mutableStateOf(ParticipantFilter.ALL) }
     // Only meaningful when participantFilter == ANY_FRIEND: empty means "any
     // friend at all", non-empty narrows to just these friends (e.g. Akhil,
@@ -214,125 +229,68 @@ fun HomeScreen(
         )
     }
     expenseForActions?.let { item ->
-        AlertDialog(
-            onDismissRequest = { expenseForActions = null },
-            title = { Text(item.expense.merchant) },
-            text = { Text("Choose what you want to do with this expense.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    context.startActivity(
-                        Intent(context, ManualExpenseActivity::class.java).apply {
-                            putExtra("expenseId", item.expense.id)
-                            putExtra("amount", item.expense.amount.toString())
-                            putExtra("merchant", item.expense.merchant)
-                            putExtra("date", item.expense.date)
-                            putExtra("category", item.expense.category)
-                            putExtra("payer", item.expense.payer)
-                            putExtra("bank", item.expense.bank)
-                            item.expense.accountIdentifier?.let {
-                                putExtra("accountIdentifier", it)
-                            }
-                            item.expense.timestampMillis?.let {
-                                putExtra("timestampMillis", it)
-                            }
-                        }
-                    )
-                    expenseForActions = null
-                }) { Text("Edit") }
+        ExpenseActionsSheet(
+            item = item,
+            onView = {
+                context.startActivity(
+                    Intent(context, ExpenseDetailActivity::class.java).putExtra("expenseId", item.expense.id)
+                )
+                expenseForActions = null
             },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        homeViewModel.deleteExpense(item.expense.id)
-                        expenseForActions = null
-                    }) { Text("Delete") }
-                    TextButton(onClick = { expenseForActions = null }) { Text("Cancel") }
-                }
-            }
+            onEdit = {
+                context.startActivity(
+                    Intent(context, ManualExpenseActivity::class.java).apply {
+                        putExtra("expenseId", item.expense.id)
+                        putExtra("amount", item.expense.amount.toString())
+                        putExtra("merchant", item.expense.merchant)
+                        putExtra("date", item.expense.date)
+                        putExtra("category", item.expense.category)
+                        putExtra("payer", item.expense.payer)
+                        putExtra("bank", item.expense.bank)
+                        item.expense.accountIdentifier?.let { putExtra("accountIdentifier", it) }
+                        item.expense.timestampMillis?.let { putExtra("timestampMillis", it) }
+                    }
+                )
+                expenseForActions = null
+            },
+            onDelete = {
+                homeViewModel.deleteExpense(item.expense.id)
+                expenseForActions = null
+            },
+            onDismiss = { expenseForActions = null }
         )
     }
     friendForActions?.let { friend ->
-        val balance = friendBalances[friend.id] ?: FriendBalance()
-        val amount = kotlin.math.abs(balance.netAmount)
-        // Resets whenever a different friend's dialog opens.
-        var partialAmountText by remember(friend.id) { mutableStateOf("") }
-        val partialAmount = partialAmountText.replace(",", "").toDoubleOrNull()
-        val partialAmountValid = partialAmount != null && partialAmount > 0.0 && partialAmount <= amount + 0.001
-
-        AlertDialog(
-            onDismissRequest = { friendForActions = null },
-            title = { Text(friend.name) },
-            text = {
-                Column {
-                    Text(
-                        if (amount > 0.01) {
-                            if (balance.netAmount > 0) {
-                                "${friend.name} owes you ${formatRupeeIndian(amount)}."
-                            } else {
-                                "You owe ${friend.name} ${formatRupeeIndian(amount)}."
-                            }
-                        } else {
-                            "There is no pending balance with ${friend.name}."
-                        }
-                    )
-
-                    if (amount > 0.01) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "Only got part of it (e.g. some in cash)? Enter that amount to settle just that part — the rest stays outstanding.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        OutlinedTextField(
-                            value = partialAmountText,
-                            onValueChange = { partialAmountText = it },
-                            label = { Text("Partial amount") },
-                            singleLine = true,
-                            isError = partialAmountText.isNotBlank() && !partialAmountValid,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
+        FriendActionsSheet(
+            friend = friend,
+            balance = friendBalances[friend.id] ?: FriendBalance(),
+            onSettle = {
+                friendToSettle = friend
+                friendForActions = null
             },
-            confirmButton = {
-                if (amount > 0.01) {
-                    Row {
-                        if (partialAmountText.isNotBlank()) {
-                            TextButton(
-                                enabled = partialAmountValid,
-                                onClick = {
-                                    friendViewModel.settleUp(friend, partialAmount)
-                                    friendForActions = null
-                                }
-                            ) { Text("Settle partial") }
-                        }
-                        TextButton(onClick = {
-                            friendViewModel.settleUp(friend)
-                            friendForActions = null
-                        }) { Text("Settle full") }
-                    }
-                }
+            onHistory = {
+                friendViewModel.loadSettlementHistory(friend.id)
+                friendForHistory = friend
+                friendForActions = null
             },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        friendViewModel.loadSettlementHistory(friend.id)
-                        friendForHistory = friend
-                        friendForActions = null
-                    }) { Text("History") }
-                    TextButton(onClick = {
-                        friendToRename = friend
-                        friendForActions = null
-                    }) { Text("Rename") }
-                    TextButton(onClick = {
-                        friendViewModel.removeFriend(friend)
-                        friendForActions = null
-                    }) { Text("Remove friend") }
-                    TextButton(onClick = { friendForActions = null }) { Text("Cancel") }
-                }
-            }
+            onRename = {
+                friendToRename = friend
+                friendForActions = null
+            },
+            onRemove = {
+                friendViewModel.removeFriend(friend)
+                friendForActions = null
+            },
+            onDismiss = { friendForActions = null }
+        )
+    }
+    friendToSettle?.let { friend ->
+        SettleUpSheet(
+            friend = friend,
+            balance = friendBalances[friend.id] ?: FriendBalance(),
+            onSettle = { settleAmount, onSaved -> friendViewModel.settleUp(friend, settleAmount, onSaved) },
+            onUndo = { id -> friendViewModel.undoSettlement(id) },
+            onDismiss = { friendToSettle = null }
         )
     }
     friendToRename?.let { friend ->
@@ -519,11 +477,12 @@ fun HomeScreen(
             },
             title = { Text("Start a new trip") },
             text = {
-                OutlinedTextField(
+                ModernTextField(
                     value = newTripName,
                     onValueChange = { newTripName = it },
-                    label = { Text("Trip name") },
-                    singleLine = true,
+                    label = "Trip name",
+                    placeholder = "e.g. Goa",
+                    autoFocus = true,
                     modifier = Modifier.fillMaxWidth()
                 )
             },
@@ -555,72 +514,17 @@ fun HomeScreen(
     }
     Scaffold(
         bottomBar = {
-            NavigationBar {
-
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = {
-                        goToTab(0)
-                    },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Filled.Home,
-                            contentDescription = "Home"
-                        )
-                    },
-                    label = {
-                        Text("Home")
-                    }
-                )
-
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = {
-                        goToTab(1)
-                    },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Filled.Person,
-                            contentDescription = "Friends"
-                        )
-                    },
-                    label = {
-                        Text("Friends")
-                    }
-                )
-
-                NavigationBarItem(
-                    selected = selectedTab == 2,
-                    onClick = {
-                        goToTab(2)
-                    },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Filled.Place,
-                            contentDescription = "Map"
-                        )
-                    },
-                    label = {
-                        Text("Map")
-                    }
-                )
-
-                NavigationBarItem(
-                    selected = selectedTab == 3,
-                    onClick = {
-                        goToTab(3)
-                    },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Filled.BarChart,
-                            contentDescription = "Insights"
-                        )
-                    },
-                    label = {
-                        Text("Insights")
-                    }
-                )
-            }
+            // Floating glass pill; the selection capsule follows the pager.
+            FloatingTabBar(
+                tabs = listOf(
+                    TabSpec("Home", Icons.Filled.Home),
+                    TabSpec("Friends", Icons.Filled.Group),
+                    TabSpec("Map", Icons.Filled.Place),
+                    TabSpec("Insights", Icons.Filled.BarChart)
+                ),
+                pagerState = pagerState,
+                onSelect = { goToTab(it) }
+            )
         },
 
         floatingActionButton = {
@@ -694,6 +598,68 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)
             ) {
+                // Period chip: "Oct ▾" / "All time ▾". All time is pinned on
+                // top of the menu, then months newest first.
+                Box {
+                    Surface(
+                        onClick = { showMonthMenu = true },
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.CalendarMonth,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = dateFilter.month?.let { periodChipLabel(it) }
+                                    ?: if (dateFilter.isActive) "Custom" else "All time",
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1
+                            )
+                            Icon(
+                                imageVector = Icons.Filled.ArrowDropDown,
+                                contentDescription = "Choose period",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    GlassMenu(
+                        expanded = showMonthMenu,
+                        onDismissRequest = { showMonthMenu = false }
+                    ) {
+                        GlassMenuItem(
+                            label = "All time",
+                            selected = dateFilter.type == DateFilterType.ALL,
+                            accent = HomeTokens.accent(),
+                            onClick = {
+                                dateFilter = DateFilter()
+                                HomePeriodStore.save(context, null)
+                                showMonthMenu = false
+                            }
+                        )
+                        GlassMenuDivider()
+                        GlassMenuHeader("Months")
+                        homeMonths.forEach { m ->
+                            GlassMenuItem(
+                                label = m.displayLabel(),
+                                caption = if (m == MonthKey.current()) "This month" else null,
+                                selected = dateFilter.month == m,
+                                accent = HomeTokens.accent(),
+                                onClick = {
+                                    dateFilter = DateFilter.forMonth(m)
+                                    HomePeriodStore.save(context, m)
+                                    showMonthMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
                 Surface(
                     onClick = { showTripPicker = true },
                     shape = RoundedCornerShape(50),
@@ -723,10 +689,9 @@ fun HomeScreen(
                 val attentionCount = pendingNotifications.size + recentPayments.size
                 BadgedBox(
                     badge = {
+                        // Red dot only — the list itself shows what's waiting.
                         if (attentionCount > 0) {
-                            Badge(modifier = Modifier.offset(x = (-6).dp, y = 6.dp)) {
-                                Text(if (attentionCount > 9) "9+" else attentionCount.toString())
-                            }
+                            NotificationBadge(count = attentionCount)
                         }
                     }
                 ) {
@@ -768,6 +733,8 @@ fun HomeScreen(
             // TAB_CONTENT_TOP_GAP below the header, so all four line up.
             val tabPageModifier = Modifier.padding(bottom = paddingValues.calculateBottomPadding())
 
+            val barInset = paddingValues.calculateBottomPadding()
+            CompositionLocalProvider(LocalBottomBarInset provides barInset) {
             HorizontalPager(
                 pageCount = 4,
                 state = pagerState,
@@ -804,11 +771,10 @@ fun HomeScreen(
                             onExpenseLongPress = { expenseForActions = it },
                             onFilterClick = { showFilterDialog = true },
                             onClearFilter = {
-                                dateFilter = DateFilter()
+                                dateFilter = HomePeriodStore.load(context)
                                 participantFilter = ParticipantFilter.ALL
                                 selectedFriendNames = emptySet()
-                            },
-                            modifier = tabPageModifier
+                            }
                         )
                     }
 
@@ -821,8 +787,10 @@ fun HomeScreen(
                             onFriendLongPress = { friendForActions = it },
                             // Double-tap is the fast path straight to settling up;
                             // long-press keeps the full menu (settle/history/rename/remove).
-                            onFriendDoubleTap = { friendForActions = it },
-                            modifier = tabPageModifier
+                            onFriendDoubleTap = { f ->
+                                if (kotlin.math.abs(friendBalances[f.id]?.netAmount ?: 0.0) > 0.01) friendToSettle = f
+                                else friendForActions = f
+                            }
                         )
                     }
 
@@ -837,11 +805,11 @@ fun HomeScreen(
 
                     3 -> {
                         InsightsScreen(
-                            viewModel = insightsViewModel,
-                            modifier = tabPageModifier
+                            viewModel = insightsViewModel
                         )
                     }
                 }
+            }
             }
         }
     }
@@ -869,6 +837,15 @@ private fun HomeTabContent(
     modifier: Modifier = Modifier
 ) {
     val filterActive = dateFilter.isActive || participantFilter.isActive
+    // Rows fade/slide in one after another only when the list first shows
+    // up; rows scrolled into view later just appear.
+    var entrancePlayed by remember { mutableStateOf(false) }
+    LaunchedEffect(expenses.isNotEmpty()) {
+        if (expenses.isNotEmpty() && !entrancePlayed) {
+            kotlinx.coroutines.delay(800)
+            entrancePlayed = true
+        }
+    }
     // "Any friend" narrowed to specific names reads better as those names
     // ("Akhil + Abin") than the generic "Any friend" label.
     val participantSummary = if (participantFilter == ParticipantFilter.ANY_FRIEND && selectedFriendNames.isNotEmpty()) {
@@ -947,7 +924,7 @@ private fun HomeTabContent(
             top = TAB_CONTENT_TOP_GAP,
             // Extra room at the bottom so the last card never sits under the
             // stacked Scan & Pay / Add Expense FABs on this tab.
-            bottom = 104.dp
+            bottom = 104.dp + LocalBottomBarInset.current
         )
     ) {
 
@@ -956,7 +933,12 @@ private fun HomeTabContent(
         // instead of a bare label + number.
         item {
             HomeHeroCard(
-                label = if (filterActive) "TOTAL (${filterLabel.uppercase()})" else "TOTAL EXPENSES",
+                label = when {
+                    filterActive -> "TOTAL (${filterLabel.uppercase()})"
+                    dateFilter.month == MonthKey.current() -> "THIS MONTH · ${dateFilter.month.shortLabel().uppercase()}"
+                    dateFilter.month != null -> "${dateFilter.month.displayLabel().uppercase()} EXPENSES"
+                    else -> "ALL-TIME EXPENSES"
+                },
                 amount = heroTotal?.second ?: total,
                 counterKey = heroTotal?.first,
                 animateEntrance = playEntrance,
@@ -1006,7 +988,10 @@ private fun HomeTabContent(
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(modifier = Modifier.height(10.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.consumeHorizontalOverscroll()
+                    ) {
                         items(
                             items = accountSpending,
                             key = { "${it.bank}|${it.accountIdentifier}" }
@@ -1035,11 +1020,9 @@ private fun HomeTabContent(
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(modifier = Modifier.height(10.dp))
-                    Treemap(
-                        items = categories,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                    )
+                    // Minimal: one thin proportion bar + quiet rows (was a
+                    // big treemap that pulled all the attention).
+                    CategoryStrip(items = categories)
 
                     Spacer(
                         modifier = Modifier.height(20.dp)
@@ -1254,22 +1237,23 @@ private fun HomeTabContent(
 
             // Newest-first, grouped under GPay-style month bars (month name +
             // that month's total), showing RECENT_PAGE_SIZE rows at a time.
-            items(
+            itemsIndexed(
                 items = visibleEntries,
-                key = { entry ->
+                key = { _, entry ->
                     when (entry) {
                         is RecentEntry.MonthBar ->
                             entry.month?.let { "bar_${it.year}_${it.month}" } ?: "bar_undated"
                         is RecentEntry.Item -> entry.item.expense.id
                     }
                 },
-                contentType = { entry ->
+                contentType = { _, entry ->
                     when (entry) {
                         is RecentEntry.MonthBar -> "month_bar"
                         is RecentEntry.Item -> "expense_row"
                     }
                 }
-            ) { entry ->
+            ) { index, entry ->
+                Column(modifier = Modifier.staggeredEntrance(index, play = !entrancePlayed)) {
                 when (entry) {
                     is RecentEntry.MonthBar -> MonthSpendBar(month = entry.month, total = entry.total)
                     is RecentEntry.Item -> {
@@ -1281,6 +1265,7 @@ private fun HomeTabContent(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                     }
+                }
                 }
             }
 
@@ -1427,6 +1412,7 @@ fun formatRupeeIndian(amount: Double): String {
 fun formatRupeeIndian(amount: String): String =
     amount.replace(",", "").trim().toDoubleOrNull()?.let { formatRupeeIndian(it) } ?: "₹$amount"
 
+@Suppress("UNUSED_PARAMETER") // animateEntrance kept so callers don't change
 @Composable
 private fun HomeHeroCard(
     label: String,
@@ -1536,14 +1522,16 @@ private fun AccountCarouselCard(
     summary: AccountSpendingSummary,
     shareOfTotal: Float
 ) {
-    Surface(
-        modifier = Modifier.width(168.dp),
-        shape = RoundedCornerShape(18.dp),
-        color = HomeTokens.card2(),
-        border = BorderStroke(1.dp, HomeTokens.line())
+    val isSlice = summary.accountIdentifier == null
+    val cardAccent = if (isSlice) Color(0xFFA37FF0) else HomeTokens.accent()
+    Box(
+        modifier = Modifier
+            .width(172.dp)
+            .modernCard(base = HomeTokens.card2(), radius = 22.dp, tint = cardAccent, tintAlpha = 0.10f)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Text(
+                // No card/account number = the Slice app's UPI payments (one card).
                 text = summary.accountIdentifier ?: "Slice",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
@@ -1577,7 +1565,7 @@ private fun AccountCarouselCard(
                         .fillMaxWidth(shareOfTotal.coerceIn(0.03f, 1f))
                         .height(4.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(HomeTokens.accent())
+                        .background(Brush.horizontalGradient(listOf(cardAccent.copy(alpha = 0.6f), cardAccent)))
                 )
             }
         }
@@ -1711,18 +1699,28 @@ private fun HomeExpenseRow(
     val iconBackground = if (darkTheme) category.fgColor.copy(alpha = 0.24f) else category.bgColor
     val isSplit = item.participants.size > 1
 
-    Surface(
+    // Press feedback: shrink a touch while the finger is down (draw phase).
+    val pressScale = remember { Animatable(1f) }
+    val rowScope = rememberCoroutineScope()
+    Box(
         modifier = modifier
             .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = pressScale.value
+                scaleY = pressScale.value
+            }
+            .modernCard(base = HomeTokens.card2(), radius = 18.dp)
             .pointerInput(item.expense.id) {
                 detectTapGestures(
+                    onPress = {
+                        rowScope.launch { pressScale.animateTo(0.97f, spring(stiffness = Spring.StiffnessMedium)) }
+                        tryAwaitRelease()
+                        rowScope.launch { pressScale.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium)) }
+                    },
                     onTap = { onTap?.invoke() },
                     onLongPress = { onLongPress?.invoke() }
                 )
-            },
-        shape = RoundedCornerShape(16.dp),
-        color = HomeTokens.card2(),
-        border = BorderStroke(1.dp, HomeTokens.line())
+            }
     ) {
         Row(
             modifier = Modifier
@@ -2073,14 +2071,12 @@ private fun CorrectSettlementDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
+                WiseAmountField(
                     value = amountText,
                     onValueChange = { amountText = it },
-                    label = { Text("Amount") },
-                    singleLine = true,
+                    label = "Amount",
                     isError = amountText.isNotBlank() && !valid,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth()
+                    autoFocus = true
                 )
             }
         },
@@ -2287,12 +2283,10 @@ private fun FilterDialog(
                             }
                         }
                         Spacer(modifier = Modifier.height(12.dp))
-                        OutlinedTextField(
+                        ModernTextField(
                             value = customName,
                             onValueChange = { customName = it },
-                            placeholder = { Text("Save as… (optional)") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
+                            label = "Save as… (optional)",
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -2572,4 +2566,149 @@ private fun DeleteTripDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+
+/**
+ * Bell alert: just a small red dot (no number) with a ring in the
+ * background colour so it looks cut out of the button. It pops in when
+ * something new arrives.
+ */
+@Composable
+private fun NotificationBadge(count: Int) {
+    val pop = remember { Animatable(0f) }
+    LaunchedEffect(count) {
+        pop.snapTo(0.4f)
+        pop.animateTo(1f, spring(dampingRatio = 0.4f, stiffness = Spring.StiffnessMedium))
+    }
+    Box(
+        modifier = Modifier
+            .offset(x = (-10).dp, y = 8.dp)
+            .graphicsLayer {
+                scaleX = pop.value
+                scaleY = pop.value
+            }
+            .size(13.dp)
+            .background(MaterialTheme.colorScheme.background, CircleShape)
+            .padding(2.5.dp)
+            .background(Color(0xFFFF4D4F), CircleShape)
+    )
+}
+
+
+private fun periodChipLabel(m: MonthKey): String =
+    if (m.year == MonthKey.current().year) m.shortLabel() else "${m.shortLabel()} ${m.year % 100}"
+
+/** Remembers Home's period (a month, or all time). Default: this month. */
+private object HomePeriodStore {
+    private const val PREFS = "home_period"
+    private const val KEY = "period" // "all" or "2026-10"
+
+    fun load(context: android.content.Context): DateFilter {
+        val raw = context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getString(KEY, null)
+        return when {
+            raw == "all" -> DateFilter()
+            raw != null -> runCatching {
+                val (y, m) = raw.split("-").map { it.toInt() }
+                DateFilter.forMonth(MonthKey(y, m))
+            }.getOrElse { DateFilter.forMonth(MonthKey.current()) }
+            else -> DateFilter.forMonth(MonthKey.current())
+        }
+    }
+
+    fun save(context: android.content.Context, month: MonthKey?) {
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).edit()
+            .putString(KEY, month?.let { "${it.year}-${it.month}" } ?: "all")
+            .apply()
+    }
+}
+
+
+/**
+ * Minimal category breakdown: a thin segmented bar showing each category's
+ * share, and up to 4 compact rows (dot · name · % · amount). "+N more"
+ * expands the rest. Segments glide to new sizes when the month changes.
+ */
+@Composable
+private fun CategoryStrip(items: List<CategorySummary>) {
+    if (items.isEmpty()) return
+    var expanded by remember { mutableStateOf(false) }
+    val total = items.sumOf { it.total }.coerceAtLeast(0.01)
+    val gap = 3.dp
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .modernCard(base = HomeTokens.card2(), radius = 18.dp)
+            .padding(horizontal = 14.dp, vertical = 14.dp)
+    ) {
+        // Proportion bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(50)),
+            horizontalArrangement = Arrangement.spacedBy(gap)
+        ) {
+            items.forEach { item ->
+                val share by animateFloatAsState(
+                    targetValue = (item.total / total).toFloat().coerceAtLeast(0.005f),
+                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(share)
+                        .fillMaxHeight()
+                        .background(item.category.fgColor.copy(alpha = 0.85f))
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        val visible = if (expanded) items else items.take(4)
+        visible.forEach { item ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(item.category.fgColor, CircleShape)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = item.category.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${item.percent}%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = HomeTokens.mut(),
+                    modifier = Modifier.padding(end = 12.dp)
+                )
+                Text(
+                    text = formatRupeeIndian(kotlin.math.round(item.total)),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+        if (items.size > 4) {
+            Text(
+                text = if (expanded) "Show less" else "+${items.size - 4} more",
+                style = MaterialTheme.typography.labelMedium,
+                color = HomeTokens.accent(),
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .clickable { expanded = !expanded }
+            )
+        }
+    }
 }

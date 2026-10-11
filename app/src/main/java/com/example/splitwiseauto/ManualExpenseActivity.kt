@@ -69,6 +69,7 @@ class ManualExpenseActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DisplayRefresh.requestHighest(this) // 90/120 Hz where the screen supports it
         CustomCategories.ensureLoaded(this)
         editingExpenseId = intent.getIntExtra("expenseId", -1).takeIf { it > 0 }
         editingBank = intent.getStringExtra("bank")
@@ -316,25 +317,13 @@ private fun ManualExpenseScreen(
                             fontWeight = FontWeight.Bold
                         )
 
-                        OutlinedTextField(
+                        WiseAmountField(
                             value = amountText,
                             onValueChange = { amountText = it; validationMessage = null },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Bill amount") },
-                            leadingIcon = {
-                                Text(
-                                    "₹",
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.headlineSmall
-                                )
-                            },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            colors = expenseFieldColors()
+                            label = "Bill amount"
                         )
 
-                        OutlinedTextField(
+                        ModernTextField(
                             value = merchant,
                             onValueChange = {
                                 merchant = it
@@ -342,10 +331,8 @@ private fun ManualExpenseScreen(
                                 validationMessage = null
                             },
                             modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Description") },
-                            placeholder = { Text("e.g. Dinner at CP Corner") },
-                            singleLine = true,
-                            colors = expenseFieldColors()
+                            label = "Description",
+                            placeholder = "e.g. Dinner at CP Corner"
                         )
 
                         // Date + time of the payment. A new expense starts at
@@ -354,12 +341,13 @@ private fun ManualExpenseScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            OutlinedTextField(
+                            ModernTextField(
                                 value = date,
                                 onValueChange = {},
-                                modifier = Modifier
-                                    .weight(1.3f)
-                                    .clickable {
+                                label = "Date",
+                                readOnly = true,
+                                modifier = Modifier.weight(1.3f),
+                                onClick = {
                                         val current = Calendar.getInstance().apply { timeInMillis = dateMillis }
                                         DatePickerDialog(
                                             context,
@@ -385,18 +373,15 @@ private fun ManualExpenseScreen(
                                             current.get(Calendar.MONTH),
                                             current.get(Calendar.DAY_OF_MONTH)
                                         ).show()
-                                    },
-                                label = { Text("Date") },
-                                singleLine = true,
-                                readOnly = true,
-                                colors = expenseFieldColors()
+                                }
                             )
-                            OutlinedTextField(
+                            ModernTextField(
                                 value = expenseTimeLabel(dateMillis) ?: "Add time",
                                 onValueChange = {},
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable {
+                                label = "Time",
+                                readOnly = true,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
                                         val current = Calendar.getInstance().apply { timeInMillis = dateMillis }
                                         android.app.TimePickerDialog(
                                             context,
@@ -415,11 +400,7 @@ private fun ManualExpenseScreen(
                                             current.get(Calendar.MINUTE),
                                             android.text.format.DateFormat.is24HourFormat(context)
                                         ).show()
-                                    },
-                                label = { Text("Time") },
-                                singleLine = true,
-                                readOnly = true,
-                                colors = expenseFieldColors()
+                                }
                             )
                         }
 
@@ -576,6 +557,12 @@ private object AddBillTokens {
     @Composable fun onAccent(): androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color(0xFF06231A)
 }
 
+/**
+ * Modern category tile: icon in a tinted circle chip, label below. Selected
+ * = soft wash of the category colour, glowing edge and a slight lift;
+ * unselected = quiet glass. Springy press feedback; long-press for custom
+ * categories (delete).
+ */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun CategoryOption(
@@ -585,82 +572,74 @@ private fun CategoryOption(
     modifier: Modifier = Modifier,
     onLongClick: (() -> Unit)? = null
 ) {
-    val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
-    val selectedContainer = if (darkTheme) {
-        category.fgColor.copy(alpha = 0.24f)
-    } else {
-        category.bgColor
-    }
-
-    Card(
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val lift by androidx.compose.animation.core.animateFloatAsState(if (selected) 1f else 0f)
+    val chipAlpha = 0.16f + 0.14f * lift
+    Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) selectedContainer else MaterialTheme.colorScheme.surfaceVariant
-        ),
-        border = if (selected) {
-            androidx.compose.foundation.BorderStroke(1.5.dp, category.fgColor)
-        } else null
+            .pressScale(source)
+            .modernCard(
+                base = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                radius = 18.dp,
+                tint = if (selected) category.fgColor else null,
+                tintAlpha = 0.22f,
+                borderColor = if (selected) category.fgColor else null
+            )
+            .combinedClickable(
+                interactionSource = source,
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .padding(vertical = 12.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .size(34.dp)
+                .background(category.fgColor.copy(alpha = chipAlpha), CircleShape),
+            contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = category.icon,
                 contentDescription = null,
-                tint = if (selected) category.fgColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = category.fgColor,
                 modifier = Modifier.size(18.dp)
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = category.name,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (selected) category.fgColor else MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = category.name,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
-
 @Composable
 private fun NewCategoryTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Card(
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val accent = Color(0xFF2FD39A)
+    Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
-        )
+            .pressScale(source)
+            .modernCard(base = Color.Transparent, radius = 18.dp, borderColor = accent.copy(alpha = 0.45f))
+            .clickable(interactionSource = source, indication = null, onClick = onClick)
+            .padding(vertical = 12.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+        Box(
+            modifier = Modifier.size(34.dp).background(accent.copy(alpha = 0.14f), CircleShape),
+            contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = Icons.Filled.Add,
-                contentDescription = "New category",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "New",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Icon(Icons.Filled.Add, contentDescription = "New category", tint = accent, modifier = Modifier.size(18.dp))
         }
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("New", style = MaterialTheme.typography.labelMedium, color = accent)
     }
 }
 
@@ -681,19 +660,17 @@ private fun NewCategoryDialog(
         title = { Text("New category") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
+                ModernTextField(
                     value = name,
                     onValueChange = {
                         if (it.length <= CustomCategories.MAX_NAME_LENGTH) name = it
                         error = null
                     },
-                    label = { Text("Name") },
-                    placeholder = { Text("e.g. Pets, Gym, Gifts") },
-                    singleLine = true,
+                    label = "Name",
+                    placeholder = "e.g. Pets, Gym, Gifts",
                     isError = error != null,
-                    supportingText = if (error != null) {
-                        { Text(error.orEmpty()) }
-                    } else null,
+                    supportingText = error,
+                    autoFocus = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text("Icon", style = MaterialTheme.typography.labelLarge)

@@ -110,7 +110,7 @@ fun FriendsTabContent(
 
         contentPadding = PaddingValues(
             top = TAB_CONTENT_TOP_GAP,
-            bottom = 24.dp
+            bottom = 24.dp + LocalBottomBarInset.current
         ),
 
         verticalArrangement = Arrangement.spacedBy(10.dp)

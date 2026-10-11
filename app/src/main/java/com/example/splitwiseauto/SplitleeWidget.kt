@@ -196,27 +196,31 @@ class SplitleeWidget : AppWidgetProvider() {
 
         private fun small(context: Context, s: SpendingSummary) =
             RemoteViews(context.packageName, R.layout.widget_splitlee).apply {
+                WidgetThemes.applyTo(context, this)
                 bindTotal(context, s)
                 setOnClickPendingIntent(R.id.widget_root, openApp(context, MainActivity.TAB_HOME, 10))
             }
 
         private fun medium(context: Context, s: SpendingSummary) =
             RemoteViews(context.packageName, R.layout.widget_splitlee_medium).apply {
+                WidgetThemes.applyTo(context, this)
                 bindTotal(context, s)
                 setTextViewText(
                     R.id.widget_stats,
-                    "${s.monthCount} transaction${if (s.monthCount == 1) "" else "s"} · " +
-                        "${rupees(s.dailyAverage)} daily avg"
+                    "${rupees(s.todayTotal)} today · ${rupees(s.dailyAverage)} daily avg"
                 )
                 bindBalancesAndActions(context, s)
             }
 
         private fun large(context: Context, s: SpendingSummary) =
             RemoteViews(context.packageName, R.layout.widget_splitlee_large).apply {
+                WidgetThemes.applyTo(context, this)
                 setTextViewText(R.id.widget_date, "Today · ${SimpleDateFormat("MMM d", Locale.getDefault()).format(Date())}")
                 bindTotal(context, s)
                 setTextViewText(R.id.widget_total_label, "TOTAL EXPENSES") // header already shows the date
-                setTextViewText(R.id.widget_txn_count, s.monthCount.toString())
+                // Tile shows today's spend (the transaction count was the
+                // least useful number here). View id kept to avoid layout churn.
+                setTextViewText(R.id.widget_txn_count, rupees(s.todayTotal))
                 setTextViewText(R.id.widget_daily_avg, rupees(s.dailyAverage))
                 bindBalancesAndActions(context, s)
             }

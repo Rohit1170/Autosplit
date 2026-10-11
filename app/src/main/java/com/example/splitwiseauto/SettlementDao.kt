@@ -9,7 +9,7 @@ import androidx.room.Update
 interface SettlementDao {
 
     @Insert
-    suspend fun insert(settlement: Settlement)
+    suspend fun insert(settlement: Settlement): Long
 
     @Update
     suspend fun update(settlement: Settlement)

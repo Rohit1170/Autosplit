@@ -65,6 +65,12 @@ fun PendingNotificationsDialog(
         TextButton(onClick = { showSmsCheck = true }) {
             Text("Bank SMS not showing up? Check recent SMS")
         }
+        // Home-screen widget look (also reachable by long-pressing the widget).
+        TextButton(onClick = {
+            context.startActivity(android.content.Intent(context, WidgetThemeActivity::class.java))
+        }) {
+            Text("Widget theme")
+        }
         if (pending.isEmpty() && payments.isEmpty()) {
             Text(
                 text = "Nothing pending — you're all caught up.",

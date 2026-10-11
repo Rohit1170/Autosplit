@@ -12,9 +12,30 @@ data class DateFilter(
     val type: DateFilterType = DateFilterType.ALL,
     val startMillis: Long? = null,
     val endMillis: Long? = null,
-    val label: String? = null
+    val label: String? = null,
+    // Set when the range is a whole month picked from Home's month chip
+    // (that's a "view", not a filter, so it doesn't show the clear-filter UI).
+    val month: MonthKey? = null
 ) {
-    val isActive: Boolean get() = type != DateFilterType.ALL
+    val isActive: Boolean get() = type != DateFilterType.ALL && month == null
+
+    companion object {
+        /** Whole calendar month [m] as a Home view. */
+        fun forMonth(m: MonthKey): DateFilter {
+            val start = m.monthStartCalendar()
+            val end = (start.clone() as java.util.Calendar).apply {
+                add(java.util.Calendar.MONTH, 1)
+                add(java.util.Calendar.MILLISECOND, -1)
+            }
+            return DateFilter(
+                type = DateFilterType.CUSTOM,
+                startMillis = start.timeInMillis,
+                endMillis = end.timeInMillis,
+                label = m.displayLabel(),
+                month = m
+            )
+        }
+    }
 
     fun summary(): String = when (type) {
         DateFilterType.ALL -> "All time"

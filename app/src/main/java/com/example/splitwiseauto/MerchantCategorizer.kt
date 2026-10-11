@@ -121,4 +121,35 @@ object MerchantCategorizer {
             Log.w(TAG, "Could not save learned category: ${e.javaClass.simpleName}")
         }
     }
+
+    private const val RECHECK_PREFS = "category_recheck"
+    private const val RECHECK_VERSION = 1
+
+    /**
+     * One-time pass over expenses still sitting in "Other": re-runs today's
+     * rules (learned merchants, merchant list, keywords incl. cut-off names)
+     * and moves the ones it now recognises. Expenses in any other category
+     * are never touched. Runs once per rules version; returns how many moved.
+     */
+    suspend fun recheckOtherExpensesOnce(context: Context): Int {
+        val prefs = context.getSharedPreferences(RECHECK_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getInt("done_version", 0) >= RECHECK_VERSION) return 0
+        var moved = 0
+        try {
+            val dao = AppDatabase.getDatabase(context).expenseDao()
+            dao.getByCategory(OTHER.name).forEach { e ->
+                if (e.merchant.isBlank() || e.merchant.equals("Unknown", ignoreCase = true)) return@forEach
+                val better = resolve(context, e.merchant)
+                if (!better.equals(OTHER.name, ignoreCase = true)) {
+                    dao.updateCategory(e.id, better)
+                    moved++
+                }
+            }
+            prefs.edit().putInt("done_version", RECHECK_VERSION).apply()
+            Log.i(TAG, "Re-checked 'Other' expenses: $moved moved to a category")
+        } catch (e: Exception) {
+            Log.w(TAG, "Re-check of Other failed: ${e.javaClass.simpleName}")
+        }
+        return moved
+    }
 }

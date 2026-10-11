@@ -21,8 +21,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -35,6 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +44,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import kotlin.math.roundToInt
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
@@ -99,6 +104,13 @@ fun InsightsScreen(
         }
     }
 
+    // Cards rise in one after another the first time Insights opens.
+    var entrancePlayed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(700)
+        entrancePlayed = true
+    }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -106,7 +118,7 @@ fun InsightsScreen(
         // The Main/bell row is now a real header above the pager (not a
         // floating overlay), so the old 54dp clearance just left an extra gap.
         // Same top gap as every other tab.
-        contentPadding = PaddingValues(top = TAB_CONTENT_TOP_GAP, bottom = 18.dp),
+        contentPadding = PaddingValues(top = TAB_CONTENT_TOP_GAP, bottom = 18.dp + LocalBottomBarInset.current),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
@@ -119,22 +131,24 @@ fun InsightsScreen(
         }
 
         item {
-            SpendTrendCard(trend = trend)
+            Box(Modifier.staggeredEntrance(0, play = !entrancePlayed)) { SpendTrendCard(trend = trend) }
         }
 
         item {
-            CategoryBreakdownCard(items = categoryBreakdown)
+            Box(Modifier.staggeredEntrance(1, play = !entrancePlayed)) { CategoryBreakdownCard(items = categoryBreakdown) }
         }
 
         // Same month total split by location — its own list, never mixed
         // into the category rows above (that mix is what summed to 186%).
         if (locationBreakdown.isNotEmpty()) {
             item {
-                CategoryBreakdownCard(
-                    items = locationBreakdown,
-                    title = "By location",
-                    emptyText = ""
-                )
+                Box(Modifier.staggeredEntrance(2, play = !entrancePlayed)) {
+                    CategoryBreakdownCard(
+                        items = locationBreakdown,
+                        title = "By location",
+                        emptyText = ""
+                    )
+                }
             }
         }
     }
@@ -208,13 +222,19 @@ private fun MonthSelector(
             }
         }
 
-        DropdownMenu(
+        GlassMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false }
+            onDismissRequest = { expanded = false },
+            minWidth = 210.dp
         ) {
+            GlassMenuHeader("Months")
+            val accent = if (isSystemInDarkTheme()) Color(0xFF2FD39A) else Color(0xFF14A87C)
             availableMonths.forEach { month ->
-                DropdownMenuItem(
-                    text = { Text(month.displayLabel()) },
+                GlassMenuItem(
+                    label = month.displayLabel(),
+                    caption = if (month == MonthKey.current()) "This month" else null,
+                    selected = month == selectedMonth,
+                    accent = accent,
                     onClick = {
                         onMonthSelected(month)
                         expanded = false
@@ -273,8 +293,22 @@ private fun SpendTrendCard(trend: SpendTrendUiState) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // Tap, or drag along the line, to see a day's date and amount.
+            var selectedDay by remember(trend.dailyPoints, trend.monthLabel) { mutableStateOf<Int?>(null) }
+            Text(
+                text = selectedDay?.let { i ->
+                    "${i + 1} ${trend.monthShortName} · ${formatRupees(trend.dailyPoints.getOrElse(i) { 0.0 })}"
+                } ?: "Tap or drag on the chart to see a day",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (selectedDay != null) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
             SpendTrendChart(
                 points = trend.dailyPoints,
+                selectedIndex = selectedDay,
+                onTap = { selectedDay = if (selectedDay == it) null else it },
+                onScrub = { selectedDay = it },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(90.dp)
@@ -296,7 +330,13 @@ private fun SpendTrendCard(trend: SpendTrendUiState) {
             if (trend.excludedTripSpend > 0.0 && trend.excludedTripLabel != null) {
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Excludes ${formatRupees(trend.excludedTripSpend)} ${trend.excludedTripLabel}",
+                    // Breakdown of the estimate: regular pace + the one-off trip.
+                    text = if (trend.projectedMonthEnd != null) {
+                        "Regular ${formatRupees(trend.dailyAverage)}/day + " +
+                            "${formatRupees(trend.excludedTripSpend)} ${trend.excludedTripLabel}"
+                    } else {
+                        "Includes ${formatRupees(trend.excludedTripSpend)} ${trend.excludedTripLabel}"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
                 )
@@ -321,7 +361,10 @@ private fun SpendStatsRow(trend: SpendTrendUiState) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        SpendStat(label = "Daily avg", value = formatRupees(dailyAvg))
+        SpendStat(
+            label = if (trend.excludedTripSpend > 0.0) "Daily avg (excl. trip)" else "Daily avg",
+            value = formatRupees(dailyAvg)
+        )
         SpendStat(label = "Biggest day", value = formatRupees(biggestDay))
         SpendStat(label = "Txns", value = trend.transactionCount.toString())
     }
@@ -363,7 +406,12 @@ private fun PercentChangeBadge(percent: Double) {
         contentColor = contentColor
     ) {
         Text(
-            text = "${if (isIncrease) "+" else ""}${"%.0f".format(percent)}% vs last month",
+            // Big jumps read better as a multiple: "3.2× last month", not "+220%".
+            text = if (percent >= 200.0) {
+                "${"%.1f".format(1 + percent / 100.0).removeSuffix(".0")}× last month"
+            } else {
+                "${if (isIncrease) "+" else ""}${"%.0f".format(percent)}% vs last month"
+            },
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium
@@ -371,64 +419,184 @@ private fun PercentChangeBadge(percent: Double) {
     }
 }
 
+/**
+ * Daily spend line.
+ *  - Tap or drag (scrub) to pick a day: a dot + guide line glide to it with a
+ *    spring, with a light haptic tick per day. Drags are consumed here so the
+ *    tab pager doesn't swipe away while scrubbing.
+ *  - When the data changes (e.g. switching month) the line morphs from the
+ *    old shape to the new one instead of jumping.
+ * All animated values are read in the draw phase; the path objects are
+ * cached and reused, so frames don't allocate.
+ */
 @Composable
 private fun SpendTrendChart(
     points: List<Double>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    selectedIndex: Int? = null,
+    onTap: (Int) -> Unit = {},
+    onScrub: (Int) -> Unit = {}
 ) {
     val lineColor = MaterialTheme.colorScheme.primary
+    val markerColor = MaterialTheme.colorScheme.onSurface
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val context = LocalContext.current
+    val still = remember { reducedMotion(context) }
 
-    Canvas(modifier = modifier) {
-        if (points.size < 2) return@Canvas
-
-        val maxValue = (points.maxOrNull() ?: 0.0).coerceAtLeast(1.0)
-        val minValue = (points.minOrNull() ?: 0.0).coerceAtMost(0.0)
-        val range = (maxValue - minValue).coerceAtLeast(1.0)
-
-        val stepX = size.width / (points.size - 1)
-        val topPadding = 8f
-        val bottomPadding = 8f
-        val usableHeight = size.height - topPadding - bottomPadding
-
-        fun yFor(value: Double): Float {
-            val normalized = (value - minValue) / range
-            return (topPadding + (1 - normalized) * usableHeight).toFloat()
+    // ---- morph between old and new data ----
+    val morph = remember { androidx.compose.animation.core.Animatable(1f) }
+    var fromNorm by remember { mutableStateOf<FloatArray?>(null) }
+    var lastNorm by remember { mutableStateOf<FloatArray?>(null) }
+    val norm = remember(points) { normalise(points) }
+    LaunchedEffect(norm) {
+        val previous = lastNorm
+        lastNorm = norm
+        if (previous == null || still || previous.contentEquals(norm)) {
+            morph.snapTo(1f)
+            return@LaunchedEffect
         }
-
-        val linePath = androidx.compose.ui.graphics.Path()
-        points.forEachIndexed { index, value ->
-            val x = stepX * index
-            val y = yFor(value)
-            if (index == 0) linePath.moveTo(x, y) else linePath.lineTo(x, y)
-        }
-
-        // Filled area beneath the line, fading out toward the bottom —
-        // the line itself is drawn separately afterward so it stays crisp.
-        val lastX = stepX * (points.size - 1)
-        val fillPath = androidx.compose.ui.graphics.Path().apply {
-            addPath(linePath)
-            lineTo(lastX, size.height)
-            lineTo(0f, size.height)
-            close()
-        }
-        drawPath(
-            path = fillPath,
-            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                colors = listOf(lineColor.copy(alpha = 0.28f), lineColor.copy(alpha = 0f)),
-                startY = 0f,
-                endY = size.height
-            )
-        )
-
-        drawPath(
-            path = linePath,
-            color = lineColor,
-            style = Stroke(width = 5f, cap = StrokeCap.Round)
-        )
-
-        val lastY = yFor(points.last())
-        drawCircle(color = lineColor, radius = 7f, center = Offset(lastX, lastY))
+        fromNorm = previous
+        morph.snapTo(0f)
+        morph.animateTo(1f, androidx.compose.animation.core.tween(450, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+        fromNorm = null
     }
+
+    // ---- selected-day marker glides between days ----
+    val markerX = remember { androidx.compose.animation.core.Animatable(0f) }
+    val markerAlpha = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(selectedIndex) {
+        val idx = selectedIndex
+        if (idx == null) {
+            markerAlpha.animateTo(0f, androidx.compose.animation.core.tween(150))
+        } else {
+            if (markerAlpha.value == 0f || still) markerX.snapTo(idx.toFloat())
+            launch { markerAlpha.animateTo(1f, androidx.compose.animation.core.tween(150)) }
+            markerX.animateTo(
+                idx.toFloat(),
+                androidx.compose.animation.core.spring(
+                    dampingRatio = 0.85f,
+                    stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                )
+            )
+        }
+    }
+
+    val count = points.size
+    var lastScrub by remember { mutableStateOf(-1) }
+    fun indexAt(x: Float, width: Float): Int =
+        if (count < 2) 0 else ((x / (width / (count - 1))).roundToInt()).coerceIn(0, count - 1)
+
+    androidx.compose.foundation.layout.Spacer(
+        modifier = modifier
+            .pointerInput(count) {
+                detectTapGestures { offset -> if (count >= 2) onTap(indexAt(offset.x, size.width.toFloat())) }
+            }
+            .pointerInput(count) {
+                if (count < 2) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        val i = indexAt(offset.x, size.width.toFloat())
+                        lastScrub = i
+                        onScrub(i)
+                    },
+                    onDragEnd = { lastScrub = -1 },
+                    onDragCancel = { lastScrub = -1 },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume() // keep the pager from taking this swipe
+                        val i = indexAt(change.position.x, size.width.toFloat())
+                        if (i != lastScrub) {
+                            lastScrub = i
+                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                            onScrub(i)
+                        }
+                    }
+                )
+            }
+            .drawWithCache {
+                val linePath = androidx.compose.ui.graphics.Path()
+                val fillPath = androidx.compose.ui.graphics.Path()
+                val fillBrush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                    colors = listOf(lineColor.copy(alpha = 0.28f), lineColor.copy(alpha = 0f)),
+                    startY = 0f,
+                    endY = size.height
+                )
+                val top = 8f
+                val usable = size.height - 16f
+                onDrawBehind {
+                    if (count < 2) return@onDrawBehind
+                    val m = morph.value
+                    val from = fromNorm
+                    linePath.reset()
+                    if (from != null && m < 1f) {
+                        // Morph: sample both shapes across the width and blend.
+                        val samples = 64
+                        for (s in 0..samples) {
+                            val t = s / samples.toFloat()
+                            val y0 = sampleAt(from, t)
+                            val y1 = sampleAt(norm, t)
+                            val v = y0 + (y1 - y0) * m
+                            val x = t * size.width
+                            val y = top + (1f - v) * usable
+                            if (s == 0) linePath.moveTo(x, y) else linePath.lineTo(x, y)
+                        }
+                    } else {
+                        val step = size.width / (count - 1)
+                        for (i in 0 until count) {
+                            val x = step * i
+                            val y = top + (1f - norm[i]) * usable
+                            if (i == 0) linePath.moveTo(x, y) else linePath.lineTo(x, y)
+                        }
+                    }
+                    fillPath.reset()
+                    fillPath.addPath(linePath)
+                    fillPath.lineTo(size.width, size.height)
+                    fillPath.lineTo(0f, size.height)
+                    fillPath.close()
+                    drawPath(fillPath, brush = fillBrush)
+                    drawPath(linePath, color = lineColor, style = Stroke(width = 5f, cap = StrokeCap.Round))
+
+                    val lastY = top + (1f - norm[count - 1]) * usable
+                    drawCircle(color = lineColor, radius = 7f, center = Offset(size.width, lastY))
+
+                    val a = markerAlpha.value
+                    if (a > 0f) {
+                        val fx = markerX.value.coerceIn(0f, (count - 1).toFloat())
+                        val i0 = fx.toInt().coerceAtMost(count - 2)
+                        val frac = fx - i0
+                        val v = norm[i0] + (norm[i0 + 1] - norm[i0]) * frac
+                        val x = fx * (size.width / (count - 1))
+                        val y = top + (1f - v) * usable
+                        drawLine(
+                            color = markerColor.copy(alpha = 0.25f * a),
+                            start = Offset(x, 0f),
+                            end = Offset(x, size.height),
+                            strokeWidth = 2f
+                        )
+                        drawCircle(color = markerColor.copy(alpha = a), radius = 9f, center = Offset(x, y))
+                        drawCircle(color = lineColor.copy(alpha = a), radius = 6f, center = Offset(x, y))
+                    }
+                }
+            }
+    )
+}
+
+/** Values scaled to 0..1 by the series max (min 0), for drawing/morphing. */
+private fun normalise(points: List<Double>): FloatArray {
+    if (points.isEmpty()) return FloatArray(0)
+    val max = (points.maxOrNull() ?: 0.0).coerceAtLeast(1.0)
+    val min = (points.minOrNull() ?: 0.0).coerceAtMost(0.0)
+    val range = (max - min).coerceAtLeast(1.0)
+    return FloatArray(points.size) { ((points[it] - min) / range).toFloat() }
+}
+
+/** Linear sample of a normalised series at horizontal position t (0..1). */
+private fun sampleAt(series: FloatArray, t: Float): Float {
+    if (series.isEmpty()) return 0f
+    if (series.size == 1) return series[0]
+    val f = t * (series.size - 1)
+    val i = f.toInt().coerceAtMost(series.size - 2)
+    val r = f - i
+    return series[i] + (series[i + 1] - series[i]) * r
 }
 
 @Composable

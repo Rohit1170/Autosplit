@@ -11,7 +11,12 @@ data class UpiPaymentRequest(
     val payeeName: String?,
     val amount: Double?,
     val currency: String?,
-    val note: String?
+    val note: String?,
+    // The QR exactly as scanned. Payments are launched from THIS, so
+    // merchant fields (mc, mode, purpose, orgid, sign, tr…) reach the UPI
+    // app untouched. Rebuilding the link from just pa/pn/am is what made
+    // Google Pay reject payments ("exceeded the bank limit").
+    val raw: String = ""
 )
 
 /**
@@ -53,7 +58,8 @@ fun parseUpiQr(raw: String): UpiPaymentRequest? {
         payeeName = params["pn"]?.takeIf { it.isNotBlank() },
         amount = amount,
         currency = params["cu"]?.takeIf { it.isNotBlank() },
-        note = params["tn"]?.takeIf { it.isNotBlank() }
+        note = params["tn"]?.takeIf { it.isNotBlank() },
+        raw = trimmed
     )
 }
 
