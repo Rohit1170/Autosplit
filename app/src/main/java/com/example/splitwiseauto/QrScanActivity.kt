@@ -564,16 +564,18 @@ class QrScanActivity : ComponentActivity() {
     /** "Check SMS again": re-reads the inbox for this payment's debit SMS. */
     private fun checkSmsAgain(paymentId: String, onDone: (String?) -> Unit) {
         lifecycleScope.launch {
-            val found = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 PendingPaymentMatcher.rescanInboxFor(this@QrScanActivity, paymentId)
             }
             onDone(
-                when {
-                    found -> null
-                    ContextCompat.checkSelfPermission(this@QrScanActivity, Manifest.permission.READ_SMS)
-                        != PackageManager.PERMISSION_GRANTED ->
+                when (result) {
+                    PendingPaymentMatcher.RescanResult.CONFIRMED -> null
+                    PendingPaymentMatcher.RescanResult.NO_PERMISSION ->
                         "Allow SMS access in Settings so the app can check your bank SMS."
-                    else -> "No matching bank SMS found yet."
+                    PendingPaymentMatcher.RescanResult.CANDIDATE_ONLY ->
+                        "Found a bank debit for this amount, but it doesn't name the payee, " +
+                            "so it wasn't matched automatically. If it's this payment, tap \"I've paid — mark as paid\"."
+                    PendingPaymentMatcher.RescanResult.NOT_FOUND -> "No matching bank SMS found yet."
                 }
             )
         }

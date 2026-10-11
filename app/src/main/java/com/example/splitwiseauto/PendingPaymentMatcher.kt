@@ -19,9 +19,11 @@ import androidx.core.content.ContextCompat
  *  1. Exact: the SMS's 12-digit UPI reference equals PendingPayment.upiRef
  *     (any status except CONFIRMED — a late SMS with an exact reference is
  *     unambiguous, even after a timeout).
- *  2. Fallback: same amount in paise, for a PENDING or VERIFIED_PENDING
- *     payment initiated within [FALLBACK_WINDOW_MILLIS] before the SMS
- *     (oldest such payment first).
+ *  2. Fallback: same amount in paise within [FALLBACK_WINDOW_MILLIS] AND
+ *     the SMS names the payee, from a real SMS, for a PENDING or
+ *     VERIFIED_PENDING payment ([PaymentMatchRules]). Anything weaker -
+ *     amount only, a notification, a FAILED payment, two possible payments -
+ *     is never confirmed automatically; the user is asked instead.
  */
 object PendingPaymentMatcher {
 
@@ -47,63 +49,123 @@ object PendingPaymentMatcher {
         REF_AFTER_KEYWORD.find(smsBody)?.groupValues?.get(1)
             ?: ANY_TWELVE_DIGITS.find(smsBody)?.groupValues?.get(1)
 
+    /** Result of offering one bank debit to the Scan & Pay payments. */
+    sealed class MatchOutcome {
+        /** Proven (reference, or amount + payee from an SMS): payment confirmed. */
+        object Confirmed : MatchOutcome()
+        /** Plausible but not proven: payment left as it was; ask the user. */
+        data class AskUser(val payment: PendingPayment) : MatchOutcome()
+        /** Not related to any Scan & Pay payment. */
+        object NoMatch : MatchOutcome()
+    }
+
     /**
-     * Live path, called by SmsReceiver for every debit SMS.
-     * Returns handledByPaymentMatcher: true means this SMS belongs to a Scan
-     * & Pay payment and the caller must NOT run the generic split flow.
+     * Live path, called by SmsIngestion for every debit (SMS or notification).
+     * Only [MatchOutcome.Confirmed] means the caller must NOT run the
+     * generic split flow. See [PaymentMatchRules] for what counts as proof.
      */
     suspend fun tryConfirm(
         context: Context,
         transaction: Transaction?,
         smsBody: String,
-        receivedAtMillis: Long
-    ): Boolean {
-        if (transaction == null || transaction.type != "DEBIT") return false
-        val smsAmountMinor = transaction.amountMinor() ?: return false
+        receivedAtMillis: Long,
+        fromNotification: Boolean = false
+    ): MatchOutcome {
+        if (transaction == null || transaction.type != "DEBIT") return MatchOutcome.NoMatch
+        val smsAmountMinor = transaction.amountMinor() ?: return MatchOutcome.NoMatch
         val dao = AppDatabase.getDatabase(context).pendingPaymentDao()
         val smsRef = extractUpiRef12(smsBody)
 
+        // 1. Exact reference: strongest proof, any status except CONFIRMED.
         val exact = smsRef?.let { dao.findByUpiRef(it) }
         if (exact != null) {
-            // Already confirmed by this same reference (e.g. SMS redelivered):
-            // still ours, so still skip the split prompt.
-            if (exact.statusEnum == PendingPaymentStatus.CONFIRMED) return true
-            return confirm(context, exact, transaction, smsRef, receivedAtMillis)
+            // Already confirmed by this same reference (SMS redelivered): still ours.
+            if (exact.statusEnum == PendingPaymentStatus.CONFIRMED) return MatchOutcome.Confirmed
+            return if (confirm(context, exact, transaction, smsRef, receivedAtMillis)) MatchOutcome.Confirmed
+            else MatchOutcome.NoMatch
         }
 
-        val fallback = dao.getPending()
+        // 2. Same amount inside the window: needs the payee named too.
+        val inWindow = (dao.getPending() + dao.getFailedSince(receivedAtMillis - FALLBACK_WINDOW_MILLIS))
+            .distinctBy { it.id }
             .filter {
-                it.amountMinor == smsAmountMinor &&
-                    it.initiatedAt >= receivedAtMillis - FALLBACK_WINDOW_MILLIS &&
+                it.initiatedAt >= receivedAtMillis - FALLBACK_WINDOW_MILLIS &&
                     it.initiatedAt <= receivedAtMillis + CLOCK_SKEW_MILLIS
             }
-            .minByOrNull { it.initiatedAt }
-            // The UPI app said "failed" but the bank debited the same amount
-            // within the window: the bank wins. (Seen with GPay: it reports a
-            // failure, yet the debit SMS arrives moments later.)
-            ?: dao.getFailedSince(receivedAtMillis - FALLBACK_WINDOW_MILLIS)
-                .filter {
-                    it.amountMinor == smsAmountMinor &&
-                        it.initiatedAt <= receivedAtMillis + CLOCK_SKEW_MILLIS
-                }
-                .minByOrNull { it.initiatedAt }
-            ?: return false
+        val scored = inWindow.map { p ->
+            p to PaymentMatchRules.evidence(
+                paymentAmountMinor = p.amountMinor,
+                paymentUpiRef = p.upiRef,
+                payeeVpa = p.payeeVpa,
+                payeeName = p.payeeName,
+                debitAmountMinor = smsAmountMinor,
+                debitRef = smsRef,
+                debitBody = smsBody,
+                debitMerchant = transaction.merchant
+            )
+        }.filter { it.second != PaymentMatchRules.Evidence.NONE }
+        if (scored.isEmpty()) return MatchOutcome.NoMatch
 
-        return confirm(context, fallback, transaction, smsRef, receivedAtMillis)
+        val strong = scored.filter { it.second == PaymentMatchRules.Evidence.AMOUNT_AND_PAYEE }
+        val (best, evidence) = (strong.ifEmpty { scored }).minByOrNull { it.first.initiatedAt }!!
+        val decision = PaymentMatchRules.decide(
+            evidence = evidence,
+            status = best.statusEnum,
+            fromNotification = fromNotification,
+            otherStrongCandidates = (strong.size - 1).coerceAtLeast(0)
+        )
+        return when (decision) {
+            PaymentMatchRules.Decision.CONFIRM ->
+                if (confirm(context, best, transaction, smsRef, receivedAtMillis)) MatchOutcome.Confirmed
+                else MatchOutcome.NoMatch
+            PaymentMatchRules.Decision.ASK_USER -> {
+                Log.i(TAG, "Debit could be payment ${best.id} but evidence is $evidence; asking the user")
+                MatchOutcome.AskUser(best)
+            }
+            PaymentMatchRules.Decision.NO_MATCH -> MatchOutcome.NoMatch
+        }
+    }
+
+    /**
+     * The user tapped "Yes, that's my payment" on a debit we could not prove
+     * (AskUser). Links that debit (a "To split" row) to the payment: the
+     * payment is confirmed, the expense is created once, the row is removed.
+     * Returns false and changes nothing if the payment is gone, already
+     * confirmed, or the amounts differ.
+     */
+    suspend fun confirmByUser(context: Context, paymentId: String, pendingRowId: Int): Boolean {
+        val db = AppDatabase.getDatabase(context)
+        val payment = db.pendingPaymentDao().getById(paymentId) ?: return false
+        if (payment.statusEnum == PendingPaymentStatus.CONFIRMED) return false
+        val row = db.pendingExpenseNotificationDao().getById(pendingRowId) ?: return false
+        val rowMinor = row.amount.replace(",", "").toDoubleOrNull()?.let { rupeesToMinor(it) } ?: return false
+        if (rowMinor != payment.amountMinor) return false
+        val ref = row.upi.takeIf { it.length == 12 && it.all(Char::isDigit) }
+        val tx = Transaction(
+            amount = row.amount, merchant = row.merchant, bank = row.bank, date = row.date,
+            balance = row.balance, upi = row.upi, type = "DEBIT",
+            accountIdentifier = row.accountIdentifier,
+            receivedAtMillis = row.timestampMillis
+        )
+        val ok = confirm(context, payment, tx, ref, row.timestampMillis)
+        if (ok) db.pendingExpenseNotificationDao().deleteById(pendingRowId)
+        return ok
     }
 
     /**
      * "Check SMS again": re-reads recent inbox SMS (in memory only) looking for
      * this one payment's debit. Needs READ_SMS; returns false without it.
      */
-    suspend fun rescanInboxFor(context: Context, paymentId: String): Boolean {
+    enum class RescanResult { CONFIRMED, CANDIDATE_ONLY, NOT_FOUND, NO_PERMISSION }
+
+    suspend fun rescanInboxFor(context: Context, paymentId: String): RescanResult {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS)
             != PackageManager.PERMISSION_GRANTED
-        ) return false
+        ) return RescanResult.NO_PERMISSION
 
         val dao = AppDatabase.getDatabase(context).pendingPaymentDao()
-        val payment = dao.getById(paymentId) ?: return false
-        if (payment.statusEnum == PendingPaymentStatus.CONFIRMED) return true
+        val payment = dao.getById(paymentId) ?: return RescanResult.NOT_FOUND
+        if (payment.statusEnum == PendingPaymentStatus.CONFIRMED) return RescanResult.CONFIRMED
 
         val from = payment.initiatedAt - CLOCK_SKEW_MILLIS
         val until = payment.initiatedAt + RESCAN_WINDOW_MILLIS
@@ -113,8 +175,9 @@ object PendingPaymentMatcher {
             "${Telephony.Sms.DATE} >= ? AND ${Telephony.Sms.DATE} <= ?",
             arrayOf(from.toString(), until.toString()),
             "${Telephony.Sms.DATE} ASC"
-        ) ?: return false
+        ) ?: return RescanResult.NOT_FOUND
 
+        var sawCandidate = false
         cursor.use {
             while (it.moveToNext()) {
                 val body = it.getString(0) ?: continue
@@ -131,16 +194,30 @@ object PendingPaymentMatcher {
                         owner.statusEnum == PendingPaymentStatus.CONFIRMED
                     ) continue
                 }
-                val refMatches = smsRef != null && smsRef == payment.upiRef
-                val amountMatches = transaction.amountMinor() == payment.amountMinor
-                if (!refMatches && !amountMatches) continue
+                val current = dao.getById(payment.id) ?: return RescanResult.NOT_FOUND
+                if (current.statusEnum == PendingPaymentStatus.CONFIRMED) return RescanResult.CONFIRMED
 
-                val current = dao.getById(payment.id) ?: return false
-                if (current.statusEnum == PendingPaymentStatus.CONFIRMED) return true
-                if (confirm(context, current, transaction, smsRef, date)) return true
+                val evidence = PaymentMatchRules.evidence(
+                    paymentAmountMinor = current.amountMinor,
+                    paymentUpiRef = current.upiRef,
+                    payeeVpa = current.payeeVpa,
+                    payeeName = current.payeeName,
+                    debitAmountMinor = transaction.amountMinor(),
+                    debitRef = smsRef,
+                    debitBody = body,
+                    debitMerchant = transaction.merchant
+                )
+                when (PaymentMatchRules.decide(evidence, current.statusEnum, fromNotification = false)) {
+                    PaymentMatchRules.Decision.CONFIRM ->
+                        if (confirm(context, current, transaction, smsRef, date)) return RescanResult.CONFIRMED
+                    // Same amount but the SMS doesn't name the payee: never
+                    // confirmed automatically, even on an explicit re-check.
+                    PaymentMatchRules.Decision.ASK_USER -> sawCandidate = true
+                    PaymentMatchRules.Decision.NO_MATCH -> Unit
+                }
             }
         }
-        return false
+        return if (sawCandidate) RescanResult.CANDIDATE_ONLY else RescanResult.NOT_FOUND
     }
 
     /** Moves [payment] to CONFIRMED and links it to exactly one expense (no split prompt). */

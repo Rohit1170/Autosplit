@@ -18,7 +18,11 @@ fun showExpenseNotification(
     // "scan_pay" when this notification is for a Scan & Pay payment the bank
     // SMS just confirmed — lets the confirmation screen link the saved expense
     // back to its PendingPayment. null for ordinary SMS-detected expenses.
-    source: String? = null
+    source: String? = null,
+    // SPL-SEC-004: set when this debit COULD be a Scan & Pay payment but the
+    // evidence wasn't enough to confirm it automatically. The notification
+    // then asks the user, and only their "Yes" links the two.
+    askAboutPayment: PendingPayment? = null
 ) {
 
     val channelId = "expense_channel"
@@ -91,24 +95,38 @@ fun showExpenseNotification(
     )
         .setSmallIcon(R.drawable.ic_stat_splitlee)
         .setColor(androidx.core.content.ContextCompat.getColor(context, R.color.splitlee_brand_green))
-        .setContentTitle(
-            "💸 ${formatRupeeIndian(transaction.amount)} spent"
-        )
-        .setContentText(
-            "${transaction.merchant} • Split, just me, or ignore"
-        )
-        .setStyle(
-            NotificationCompat.BigTextStyle()
-                .bigText(
-                    "${formatRupeeIndian(transaction.amount)} spent at ${transaction.merchant}\n" +
+        .apply {
+            if (askAboutPayment == null) {
+                setContentTitle("💸 ${formatRupeeIndian(transaction.amount)} spent")
+                setContentText("${transaction.merchant} • Split, just me, or ignore")
+                setStyle(
+                    NotificationCompat.BigTextStyle().bigText(
+                        "${formatRupeeIndian(transaction.amount)} spent at ${transaction.merchant}\n" +
                             "Who was this for?"
+                    )
                 )
-        )
-        // One tap, no app: Split opens the split screen; Just me saves it as
-        // your own expense; Ignore drops it (ExpenseActionReceiver).
-        .addAction(0, "Split", pendingIntent)
-        .addAction(0, "Just me", expenseAction(context, ExpenseActionReceiver.ACTION_JUST_ME, pendingNotificationId))
-        .addAction(0, "Ignore", expenseAction(context, ExpenseActionReceiver.ACTION_IGNORE, pendingNotificationId))
+                // One tap, no app: Split opens the split screen; Just me saves it as
+                // your own expense; Ignore drops it (ExpenseActionReceiver).
+                addAction(0, "Split", pendingIntent)
+                addAction(0, "Just me", expenseAction(context, ExpenseActionReceiver.ACTION_JUST_ME, pendingNotificationId))
+                addAction(0, "Ignore", expenseAction(context, ExpenseActionReceiver.ACTION_IGNORE, pendingNotificationId))
+            } else {
+                val payee = askAboutPayment.payeeName ?: askAboutPayment.payeeVpa
+                setContentTitle("${formatRupeeIndian(transaction.amount)} debited. Your Scan & Pay to $payee?")
+                setContentText("Not matched automatically. Tap Yes if it was.")
+                setStyle(
+                    NotificationCompat.BigTextStyle().bigText(
+                        "Your bank shows a ${formatRupeeIndian(transaction.amount)} debit " +
+                            "(${transaction.merchant}). It wasn't matched to your Scan & Pay " +
+                            "to $payee automatically because it doesn't clearly name the payee. " +
+                            "Was it that payment?"
+                    )
+                )
+                addAction(0, "Yes, it was", scanPayConfirmAction(context, pendingNotificationId, askAboutPayment.id))
+                addAction(0, "No, split it", pendingIntent)
+                addAction(0, "Just me", expenseAction(context, ExpenseActionReceiver.ACTION_JUST_ME, pendingNotificationId))
+            }
+        }
         .setPriority(
             NotificationCompat.PRIORITY_HIGH
         )
@@ -124,6 +142,25 @@ fun showExpenseNotification(
             notification
         )
 }
+
+/** Debit that might be [payment]: ask the user instead of confirming it (SPL-SEC-004). */
+fun showScanPayCandidateNotification(
+    context: Context,
+    transaction: Transaction,
+    pendingNotificationId: Int,
+    payment: PendingPayment
+) = showExpenseNotification(context, transaction, pendingNotificationId, askAboutPayment = payment)
+
+private fun scanPayConfirmAction(context: Context, pendingId: Int, paymentId: String): PendingIntent =
+    PendingIntent.getBroadcast(
+        context,
+        pendingId * 4 + 3,
+        Intent(context, ExpenseActionReceiver::class.java)
+            .setAction(ExpenseActionReceiver.ACTION_CONFIRM_SCAN_PAY)
+            .putExtra(ExpenseActionReceiver.EXTRA_PENDING_ID, pendingId)
+            .putExtra(ExpenseActionReceiver.EXTRA_PAYMENT_ID, paymentId),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
 
 private fun expenseAction(context: Context, action: String, pendingId: Int): PendingIntent =
     PendingIntent.getBroadcast(

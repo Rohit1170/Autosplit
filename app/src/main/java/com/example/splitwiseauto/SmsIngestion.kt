@@ -117,11 +117,17 @@ object SmsIngestion {
 
         // Scan & Pay matcher runs FIRST — it now always posts its own
         // "confirmed by bank" notification, so a matched SMS is never silent.
-        if (PendingPaymentMatcher.tryConfirm(context, debit, body, receivedAtMillis)) {
+        val match = PendingPaymentMatcher.tryConfirm(context, debit, body, receivedAtMillis, fromNotification)
+        if (match is PendingPaymentMatcher.MatchOutcome.Confirmed) {
             Log.i(TAG, "[$who] matched a Scan & Pay payment (Rs ${debit.amount})")
             note(NotificationAlerts.Outcome.MATCHED_SCAN_PAY, debit)
             return
         }
+        // Plausible but unproven (same amount, payee not named, notification
+        // source, or a FAILED payment): the payment is left untouched and the
+        // debit goes to "To split" like any other, with a notification that
+        // asks the user whether it was that Scan & Pay payment.
+        val askAbout = (match as? PendingPaymentMatcher.MatchOutcome.AskUser)?.payment
         Log.i(TAG, "[$who] debit Rs ${debit.amount} at ${debit.merchant} -> split prompt")
 
         val isFresh = System.currentTimeMillis() - receivedAtMillis < LOCATION_FRESH_MILLIS
@@ -143,7 +149,11 @@ object SmsIngestion {
             )
         ).toInt()
 
-        showExpenseNotification(context, withLocation, pendingId)
+        if (askAbout != null) {
+            showScanPayCandidateNotification(context, withLocation, pendingId, askAbout)
+        } else {
+            showExpenseNotification(context, withLocation, pendingId)
+        }
         note(NotificationAlerts.Outcome.ADDED, debit)
         if (fromNotification) NotificationAlerts.noteEvent(context, "Payment of Rs ${debit.amount} added to To split")
         Log.i(TAG, "[$who] saved to 'To split' (id=$pendingId) and notification requested")

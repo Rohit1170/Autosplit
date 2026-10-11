@@ -77,6 +77,8 @@ class ExpenseActionReceiver : BroadcastReceiver() {
         const val ACTION_JUST_ME = "com.example.splitwiseauto.action.JUST_ME"
         const val ACTION_IGNORE = "com.example.splitwiseauto.action.IGNORE"
         const val EXTRA_PENDING_ID = "pendingNotificationId"
+        const val ACTION_CONFIRM_SCAN_PAY = "com.example.splitwiseauto.action.CONFIRM_SCAN_PAY"
+        const val EXTRA_PAYMENT_ID = "scanPayPaymentId"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -94,6 +96,13 @@ class ExpenseActionReceiver : BroadcastReceiver() {
                         if (saved != null) toast(app, "Saved as your expense")
                     }
                     ACTION_IGNORE -> QuickExpenseActions.ignore(app, pendingId)
+                    // "Yes, it was": the user ties an unproven debit to their
+                    // Scan & Pay payment (SPL-SEC-004). Re-validated inside.
+                    ACTION_CONFIRM_SCAN_PAY -> {
+                        val paymentId = intent.getStringExtra(EXTRA_PAYMENT_ID) ?: return@launch
+                        val ok = PendingPaymentMatcher.confirmByUser(app, paymentId, pendingId)
+                        toast(app, if (ok) "Marked as paid" else "Couldn't match it. It's still in To split")
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("ExpenseActionReceiver", "Action failed: ${e.javaClass.simpleName}")
