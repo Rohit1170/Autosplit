@@ -11,6 +11,20 @@ plugins {
 // is missing (e.g. a fresh clone without the keystore), release builds fall
 // back to unsigned config so the project still opens — you just can't produce
 // a signed release APK until you restore keystore.properties + the .jks.
+// Google Maps key: read from local.properties (gitignored) or the
+// MAPS_API_KEY environment variable (CI). It must NEVER live in a tracked
+// file such as gradle.properties - see SPL-SEC-001 and SecretsHygieneTest.
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) FileInputStream(f).use { load(it) }
+}
+val mapsApiKey: String = localProps.getProperty("MAPS_API_KEY")
+    ?: System.getenv("MAPS_API_KEY")
+    ?: ""
+if (mapsApiKey.isEmpty()) {
+    logger.warn("MAPS_API_KEY not set in local.properties or the environment - the Map tab will be blank.")
+}
+
 val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) {
@@ -33,7 +47,7 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
-        manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
 
         // Room schema export target (paired with exportSchema = true on
         // AppDatabase, starting at v9). AppDatabaseMigrationTest reads
