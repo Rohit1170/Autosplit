@@ -22,7 +22,6 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.draw.alpha
-import androidx.core.view.animation.PathInterpolatorCompat
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -1302,8 +1301,10 @@ private fun HomeTabContent(
 // Shared entrance-animation curve for every Home entrance animation (hero
 // count-up + the staggered rise/fade below) — one interpolator wrapped once
 // so every element eases identically instead of drifting apart.
-private val EntranceInterpolator = PathInterpolatorCompat.create(0.22f, 1f, 0.36f, 1f)
-private val EntranceEasing = Easing { fraction -> EntranceInterpolator.getInterpolation(fraction) }
+// Same cubic-bezier curve as before, but Compose's pure-Kotlin easing: no
+// android.graphics.Path at class load, so this file's top-level helpers
+// (formatRupeeIndian, used by the widget) load in JVM unit tests.
+private val EntranceEasing: Easing = androidx.compose.animation.core.CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
 
 /**
  * Whether Home's entrance animations have already played this app process.

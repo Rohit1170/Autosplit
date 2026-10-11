@@ -2,6 +2,7 @@ package com.example.splitwiseauto
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TransactionParserTest {
@@ -296,5 +297,50 @@ class TransactionParserTest {
 
         assertEquals("SHREE GANESH HO", transaction?.merchant)
         assertEquals("Food", categorize(transaction!!.merchant).name)
+    }
+
+    // ---- No-currency amount fallback ("debited by 480.0"): must not widen ----
+
+    @Test
+    fun noCurrencyFallbackStillRejectsPersonalSender() {
+        // Same SBI wording, but from a phone number: never an expense.
+        assertNull(
+            parseBankSms(
+                "Dear UPI user A/C X8888 debited by 480.0 on date 28Sep26 trf to PRIYA MENON Refno 556677889900. -SBI",
+                sender = "+919876543210"
+            )
+        )
+    }
+
+    @Test
+    fun noCurrencyFallbackStillRejectsOtpMessages() {
+        assertNull(
+            parseBankSms(
+                "OTP 482913 for txn of A/C X8888 to be debited by 480.0. Do not share. -SBI",
+                sender = "SBIINB"
+            )
+        )
+    }
+
+    @Test
+    fun noCurrencyFallbackNeedsANumberRightAfterDebitedBy() {
+        // "debited by" followed by words, and no Rs/INR anywhere: no amount, no expense.
+        assertNull(
+            parseBankSms(
+                "Your A/C X8888 will be debited by the bank for annual charges. -SBI",
+                sender = "SBIINB"
+            )
+        )
+    }
+
+    @Test
+    fun currencyMarkedAmountStillWinsOverFallback() {
+        // When Rs is present it is used, not the number after "debited by".
+        val t = parseBankSms(
+            "A/C X8888 debited by 2 transactions totalling Rs 750.00 on 28Sep26 to SWIGGY. -SBI",
+            sender = "SBIINB"
+        )
+        assertNotNull(t)
+        assertEquals("750.00", t?.amount)
     }
 }

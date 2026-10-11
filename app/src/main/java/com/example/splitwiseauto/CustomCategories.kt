@@ -86,14 +86,18 @@ object CustomCategories {
     fun isCustom(name: String): Boolean =
         items.any { it.name.equals(name, ignoreCase = true) }
 
+    /** The stored spelling of a built-in or custom category matching [name], if any. */
+    private fun existingName(name: String): String? =
+        expenseCategories.firstOrNull { it.name.equals(name, ignoreCase = true) }?.name
+            ?: items.firstOrNull { it.name.equals(name, ignoreCase = true) }?.name
+
     /** Returns an error message, or null when the name is acceptable. */
     fun validate(rawName: String): String? {
         val name = rawName.trim()
         return when {
             name.isEmpty() -> "Enter a name"
             name.length > MAX_NAME_LENGTH -> "Keep it under $MAX_NAME_LENGTH characters"
-            expenseCategories.any { it.name.equals(name, ignoreCase = true) } ||
-                isCustom(name) -> "\"$name\" already exists"
+            existingName(name) != null -> "\"${existingName(name)}\" already exists"
             items.size >= MAX_CUSTOM -> "You can have up to $MAX_CUSTOM custom categories"
             else -> null
         }

@@ -467,6 +467,11 @@ fun parseBankSms(
             .find(message)?.groupValues?.getOrNull(1)
             ?: Regex("""\b([\d,]+(?:\.\d{1,2})?)\s*(?:rs\.?|inr|₹)\b""", RegexOption.IGNORE_CASE)
                 .find(message)?.groupValues?.getOrNull(1)
+            // No currency marker at all, e.g. SBI UPI: "A/C X8888 debited by
+            // 480.0 on date 28Sep26 trf to NAME Refno ...". Only a number
+            // directly after "debited/credited by|with|for" counts.
+            ?: Regex("""\b(?:debited|credited)\s+(?:by|with|for)\s+([\d,]+(?:\.\d{1,2})?)\b""", RegexOption.IGNORE_CASE)
+                .find(message)?.groupValues?.getOrNull(1)
     val parsedAmount = amountText?.replace(",", "")?.toDoubleOrNull() ?: return null
     if (parsedAmount <= 0.0) return null
 

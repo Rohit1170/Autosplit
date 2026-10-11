@@ -97,7 +97,10 @@ class SplitleeWidget : AppWidgetProvider() {
     companion object {
         private const val TAG = "SplitleeWidget"
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        private val mainHandler = Handler(Looper.getMainLooper())
+        // Lazy: created on first use, not when the class loads, so the pure
+        // helpers below (nextMidnightMillis, compareWithYesterday) can be
+        // unit-tested on the JVM, where Looper is an unmocked stub.
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
         private const val DEBOUNCE_MS = 1_500L
         private const val REQUEST_MIDNIGHT = 9_001
         @Volatile private var appContext: Context? = null
