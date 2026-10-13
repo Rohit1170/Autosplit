@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
@@ -120,6 +121,19 @@ object DisplayRefresh {
 }
 
 // ---------------------------------------------------------------------------
+// Motion tokens (Emil Kowalski's curves; the built-in Material ones are too
+// soft). Use these instead of FastOutSlowInEasing for UI motion.
+//   MotionEaseOut    - things entering/exiting, press feedback
+//   MotionEaseInOut  - things moving/morphing on screen
+//   MotionEaseDrawer - sheets and drawers (iOS-like)
+// UI motion stays under 300 ms; exits are faster than entrances.
+// ---------------------------------------------------------------------------
+
+val MotionEaseOut = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+val MotionEaseInOut = CubicBezierEasing(0.77f, 0f, 0.175f, 1f)
+val MotionEaseDrawer = CubicBezierEasing(0.32f, 0.72f, 0f, 1f)
+
+// ---------------------------------------------------------------------------
 // 6. Staggered entrance
 // ---------------------------------------------------------------------------
 
@@ -138,13 +152,13 @@ fun Modifier.staggeredEntrance(index: Int, play: Boolean): Modifier = composed {
     LaunchedEffect(Unit) {
         if (progress.value < 1f) {
             delay(index * STAGGER_STEP_MS)
-            progress.animateTo(1f, tween(380, easing = FastOutSlowInEasing))
+            progress.animateTo(1f, tween(300, easing = MotionEaseOut))
         }
     }
     graphicsLayer {
         val p = progress.value
         alpha = p
-        translationY = (1f - p) * 18.dp.toPx()
+        translationY = (1f - p) * 8.dp.toPx()
     }
 }
 
@@ -311,8 +325,8 @@ fun SuccessBurst(
         if (still) return@LaunchedEffect
         launch { glow.animateTo(1f, tween(900, easing = FastOutSlowInEasing)) }
         if (celebrate) launch { confetti.animateTo(1f, tween(1400, easing = LinearEasing)) }
-        ring.animateTo(target, tween(650, easing = FastOutSlowInEasing))
-        if (full) check.animateTo(1f, tween(320, easing = FastOutSlowInEasing))
+        ring.animateTo(target, tween(650, easing = MotionEaseOut))
+        if (full) check.animateTo(1f, tween(280, easing = MotionEaseOut))
     }
 
     Box(
@@ -491,12 +505,56 @@ private fun lerpColor(a: Color, b: Color, t: Float): Color = Color(
     alpha = a.alpha
 )
 
-/** Springy shrink while pressed (0.97×); read in the draw phase. */
-fun Modifier.pressScale(source: androidx.compose.foundation.interaction.InteractionSource): Modifier = composed {
+// ---------------------------------------------------------------------------
+// Haptics: subtle tick on tap, firmer "hold" on long-press. Uses the view's
+// built-in haptic feedback (no VIBRATE permission) and follows the phone's
+// own "Touch feedback" setting, so users who turned it off feel nothing.
+// ---------------------------------------------------------------------------
+
+object Haptics {
+    /** Light tick for a tap/click. */
+    fun tap(view: android.view.View) {
+        view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+    }
+
+    /** Firmer pulse when a long-press is recognised. */
+    fun hold(view: android.view.View) {
+        view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+    }
+}
+
+/**
+ * Shrink to 0.97x while pressed; read in the draw phase. Press is a fast
+ * ease-out (120 ms) and release settles without overshoot: buttons are
+ * pressed tens of times a day, so no bounce.
+ */
+fun Modifier.pressScale(
+    source: androidx.compose.foundation.interaction.InteractionSource,
+    haptic: Boolean = true
+): Modifier = composed {
     val pressed by source.collectIsPressedAsState()
+    // Tick when a tap completes. A release after the long-press timeout
+    // was a hold (that path plays its own "hold" haptic), so no tick then.
+    if (haptic) {
+        val view = androidx.compose.ui.platform.LocalView.current
+        LaunchedEffect(source) {
+            var pressedAt = 0L
+            val holdMs = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+            source.interactions.collect { i ->
+                when (i) {
+                    is androidx.compose.foundation.interaction.PressInteraction.Press ->
+                        pressedAt = android.os.SystemClock.uptimeMillis()
+                    is androidx.compose.foundation.interaction.PressInteraction.Release -> {
+                        if (android.os.SystemClock.uptimeMillis() - pressedAt < holdMs) Haptics.tap(view)
+                    }
+                    else -> Unit
+                }
+            }
+        }
+    }
     val scale by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (pressed) 0.97f else 1f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium)
+        animationSpec = if (pressed) tween(120, easing = MotionEaseOut) else tween(200, easing = MotionEaseOut)
     )
     graphicsLayer {
         scaleX = scale
@@ -584,7 +642,7 @@ fun SpinningRupee(
                     }
                     val fromLeft = ds.length - 1 - place
                     delay(fromLeft * 40L)
-                    reel.animateTo(cur + diff, tween(620, easing = FastOutSlowInEasing))
+                    reel.animateTo(cur + diff, tween(560, easing = MotionEaseInOut))
                     reel.snapTo(target)
                 }
             }

@@ -572,6 +572,7 @@ private fun CategoryOption(
     modifier: Modifier = Modifier,
     onLongClick: (() -> Unit)? = null
 ) {
+    val view = androidx.compose.ui.platform.LocalView.current
     val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val lift by androidx.compose.animation.core.animateFloatAsState(if (selected) 1f else 0f)
     val chipAlpha = 0.16f + 0.14f * lift
@@ -589,7 +590,7 @@ private fun CategoryOption(
                 interactionSource = source,
                 indication = null,
                 onClick = onClick,
-                onLongClick = onLongClick
+                onLongClick = onLongClick?.let { hold -> { Haptics.hold(view); hold() } }
             )
             .padding(vertical = 12.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally

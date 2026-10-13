@@ -297,7 +297,7 @@ private fun AnimatedAmountText(display: String, style: TextStyle, color: Color) 
                 shown.remove(g)
             } else {
                 scope.launch {
-                    g.anim.animateTo(0f, tween(140))
+                    g.anim.animateTo(0f, tween(120, easing = MotionEaseOut))
                     shown.remove(g)
                 }
             }
@@ -312,7 +312,7 @@ private fun AnimatedAmountText(display: String, style: TextStyle, color: Color) 
                 val a = Animatable(if (still) 1f else 0f)
                 next += ShownGlyph(k, c, a)
                 if (!still) scope.launch {
-                    a.animateTo(1f, spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow))
+                    a.animateTo(1f, spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMedium))
                 }
             }
         }

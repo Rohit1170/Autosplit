@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Dark glass in the wallpaper's own neutral tone (Material You). -->
+<!-- Glass in the wallpaper's own secondary tone (Material You). accent2_800
+     is clearly tinted by the wallpaper (neutral2_900 read as near-black, so
+     the theme looked the same as Splitlee green). -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:alpha="0.92" android:color="@android:color/system_neutral2_900" />
+    <item android:alpha="0.94" android:color="@android:color/system_accent2_800" />
 </selector>

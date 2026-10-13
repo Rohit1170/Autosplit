@@ -68,6 +68,31 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _categorySummaries = MutableStateFlow<List<CategorySummary>>(emptyList())
     val categorySummaries: StateFlow<List<CategorySummary>> = _categorySummaries
 
+    // Home's donut: TODAY's spending by category (current Main/trip mode,
+    // ignoring the month chip). The month view lives on Insights.
+    private val _todayCategories = MutableStateFlow<List<CategorySummary>>(emptyList())
+    val todayCategories: StateFlow<List<CategorySummary>> = _todayCategories
+    private var todayExpenses: List<ExpenseWithParticipants> = emptyList()
+    private var yesterdayExpenses: List<ExpenseWithParticipants> = emptyList()
+
+    /** Drill-down for a slice of Home's "Today by category" donut. */
+    fun todayDrill(summary: CategorySummary): DrillData {
+        fun matches(e: ExpenseWithParticipants) = categoryByName(e.expense.category).name == summary.category.name
+        return DrillData(
+            title = summary.category.name,
+            icon = summary.category.icon,
+            color = summary.category.fgColor,
+            periodLabel = "Today",
+            percent = summary.percent,
+            items = todayExpenses.filter(::matches),
+            previousTotal = yesterdayExpenses.filter(::matches).sumOf { it.expense.amount },
+            previousLabel = "yesterday"
+        )
+    }
+
+    /** Reload with the filters last used (after a payment changed category). */
+    fun refresh() = loadExpenses(currentTripId, currentDateFilter, currentParticipantFilter, currentSelectedFriendNames)
+
     private val _accountSpending = MutableStateFlow<List<AccountSpendingSummary>>(emptyList())
     val accountSpending: StateFlow<List<AccountSpendingSummary>> = _accountSpending
 
@@ -186,6 +211,20 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val tilePercents = InsightsMath.percents(tiles.map { it.second })
             _categorySummaries.value = tiles.mapIndexed { i, (category, sum) ->
                 CategorySummary(category, sum, tilePercents[i])
+            }
+
+            val today = DayRange.of(now, now)
+            val todayItems = tripFiltered.filter { e -> e.expense.timestampMillis?.let { today.contains(it) } == true }
+            val yesterday = DayRange.of(now - 86_400_000L, now - 86_400_000L)
+            todayExpenses = todayItems.sortedByDescending { it.expense.timestampMillis }
+            yesterdayExpenses = tripFiltered.filter { e -> e.expense.timestampMillis?.let { yesterday.contains(it) } == true }
+            val todayByCategory = todayItems
+                .groupBy { categoryByName(it.expense.category) }
+                .map { (category, items) -> category to items.sumOf { it.expense.amount } }
+                .sortedByDescending { it.second }
+            val todayPercents = InsightsMath.percents(todayByCategory.map { it.second })
+            _todayCategories.value = todayByCategory.mapIndexed { i, (category, sum) ->
+                CategorySummary(category, sum, todayPercents[i])
             }
 
             _accountSpending.value = data

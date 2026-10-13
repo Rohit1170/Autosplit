@@ -1,6 +1,7 @@
 package com.example.splitwiseauto
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -43,6 +44,10 @@ fun AppSheet(
     title: String,
     onDismiss: () -> Unit,
     trailing: (@Composable () -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
+    subtitle: String? = null,
+    // Splitlee's dark-green glass instead of the plain Material surface.
+    glass: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -65,9 +70,32 @@ fun AppSheet(
                         onClick = {}
                     ),
                 shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 3.dp
+                color = if (glass) androidx.compose.ui.graphics.Color.Transparent else MaterialTheme.colorScheme.surface,
+                // A transparent Surface can't derive a text colour (it fell back
+                // to black on the dark glass), so set it explicitly.
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                tonalElevation = if (glass) 0.dp else 3.dp
             ) {
+              Box(
+                modifier = if (!glass) Modifier else Modifier
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            if (androidx.compose.foundation.isSystemInDarkTheme())
+                                listOf(androidx.compose.ui.graphics.Color(0xFF17221E), androidx.compose.ui.graphics.Color(0xFF0D1311))
+                            else listOf(androidx.compose.ui.graphics.Color(0xFFFFFFFF), androidx.compose.ui.graphics.Color(0xFFF1F6F3))
+                        )
+                    )
+                    .border(
+                        1.dp,
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(
+                                androidx.compose.ui.graphics.Color.White.copy(alpha = 0.14f),
+                                androidx.compose.ui.graphics.Color.White.copy(alpha = 0.0f)
+                            )
+                        ),
+                        RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+                    )
+              ) {
                 Column(
                     modifier = Modifier
                         .navigationBarsPadding()
@@ -85,19 +113,32 @@ fun AppSheet(
                     )
                     Spacer(modifier = Modifier.height(14.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
+                        leading?.let {
+                            it()
+                            Spacer(modifier = Modifier.size(12.dp))
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            subtitle?.let {
+                                Text(
+                                    text = it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                         trailing?.invoke()
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     content()
                 }
+              }
             }
         }
     }

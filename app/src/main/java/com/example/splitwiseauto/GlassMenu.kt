@@ -119,16 +119,18 @@ fun GlassMenu(
         ) {
             AnimatedVisibility(
                 visibleState = state,
-                enter = if (calm) fadeIn(tween(90)) else
-                    fadeIn(tween(140)) + scaleIn(
-                        animationSpec = spring(dampingRatio = 0.78f, stiffness = 700f),
-                        initialScale = 0.9f,
+                // Dropdown: 200 ms strong ease-out from 0.95 out of the chip;
+                // exit is quicker (140 ms) than entry. No bounce.
+                enter = if (calm) fadeIn(tween(120)) else
+                    fadeIn(tween(200, easing = MotionEaseOut)) + scaleIn(
+                        animationSpec = tween(200, easing = MotionEaseOut),
+                        initialScale = 0.95f,
                         transformOrigin = origin
                     ),
-                exit = if (calm) fadeOut(tween(80)) else
-                    fadeOut(tween(110)) + scaleOut(
-                        animationSpec = tween(110),
-                        targetScale = 0.95f,
+                exit = if (calm) fadeOut(tween(100)) else
+                    fadeOut(tween(140, easing = MotionEaseOut)) + scaleOut(
+                        animationSpec = tween(140, easing = MotionEaseOut),
+                        targetScale = 0.97f,
                         transformOrigin = origin
                     )
             ) {
@@ -205,7 +207,9 @@ fun GlassMenuItem(
     selected: Boolean,
     accent: Color,
     onClick: () -> Unit,
-    caption: String? = null
+    caption: String? = null,
+    leadingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    trailing: (@Composable () -> Unit)? = null
 ) {
     val dark = isSystemInDarkTheme()
     val source = remember { MutableInteractionSource() }
@@ -221,6 +225,15 @@ fun GlassMenuItem(
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (leadingIcon != null) {
+            Icon(
+                leadingIcon,
+                contentDescription = null,
+                tint = if (selected) accent else onSurface.copy(alpha = 0.6f),
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+        }
         Text(
             label,
             modifier = Modifier.weight(1f),
@@ -237,6 +250,10 @@ fun GlassMenuItem(
                 fontWeight = FontWeight.Medium,
                 color = onSurface.copy(alpha = 0.45f)
             )
+        }
+        if (trailing != null) {
+            Spacer(Modifier.width(4.dp))
+            trailing()
         }
         Spacer(Modifier.width(10.dp))
         Box(
@@ -255,5 +272,29 @@ fun GlassMenuItem(
                 )
             }
         }
+    }
+}
+
+/** Accent action row at the bottom of a menu, e.g. "+ New trip". */
+@Composable
+fun GlassMenuAction(
+    label: String,
+    accent: Color,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit
+) {
+    val source = remember { MutableInteractionSource() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pressScale(source)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(interactionSource = source, indication = androidx.compose.foundation.LocalIndication.current, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(10.dp))
+        Text(label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = accent)
     }
 }

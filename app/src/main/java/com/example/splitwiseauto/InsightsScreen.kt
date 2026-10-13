@@ -3,6 +3,7 @@ package com.example.splitwiseauto
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
@@ -67,9 +69,13 @@ import java.util.Locale
 @Composable
 fun InsightsScreen(
     viewModel: InsightsViewModel = viewModel(),
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDataChanged: () -> Unit = {}
 ) {
+    // Tapped "Where it went" / "By location" row -> drill-down sheet.
+    var drillTarget by remember { mutableStateOf<Pair<CategorySummary, Boolean>?>(null) }
     val selectedMonth by viewModel.selectedMonth.collectAsState()
+    val customRange by viewModel.customRange.collectAsState()
     val availableMonths by viewModel.availableMonths.collectAsState()
     val trend by viewModel.spendTrend.collectAsState()
     val categoryBreakdown by viewModel.categoryBreakdown.collectAsState()
@@ -111,6 +117,21 @@ fun InsightsScreen(
         entrancePlayed = true
     }
 
+    drillTarget?.let { (summary, byLocation) ->
+        // Re-derived whenever the data reloads (e.g. after "move category").
+        val data = remember(summary, byLocation, trend, categoryBreakdown, locationBreakdown) {
+            viewModel.drill(summary, byLocation)
+        }
+        CategoryDetailSheet(
+            data = data,
+            onDismiss = { drillTarget = null },
+            onChanged = {
+                viewModel.refresh()
+                onDataChanged()
+            }
+        )
+    }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -124,8 +145,10 @@ fun InsightsScreen(
         item {
             InsightsHeader(
                 selectedMonth = selectedMonth,
+                customRange = customRange,
                 availableMonths = availableMonths,
                 onMonthSelected = viewModel::selectMonth,
+                onRangeSelected = viewModel::selectRange,
                 onExport = onExport
             )
         }
@@ -135,7 +158,9 @@ fun InsightsScreen(
         }
 
         item {
-            Box(Modifier.staggeredEntrance(1, play = !entrancePlayed)) { CategoryBreakdownCard(items = categoryBreakdown) }
+            Box(Modifier.staggeredEntrance(1, play = !entrancePlayed)) {
+                CategoryBreakdownCard(items = categoryBreakdown, onRowClick = { drillTarget = it to false })
+            }
         }
 
         // Same month total split by location — its own list, never mixed
@@ -146,7 +171,8 @@ fun InsightsScreen(
                     CategoryBreakdownCard(
                         items = locationBreakdown,
                         title = "By location",
-                        emptyText = ""
+                        emptyText = "",
+                        onRowClick = { drillTarget = it to true }
                     )
                 }
             }
@@ -157,8 +183,10 @@ fun InsightsScreen(
 @Composable
 private fun InsightsHeader(
     selectedMonth: MonthKey,
+    customRange: DayRange?,
     availableMonths: List<MonthKey>,
     onMonthSelected: (MonthKey) -> Unit,
+    onRangeSelected: (DayRange) -> Unit,
     onExport: () -> Unit
 ) {
     Row(
@@ -183,8 +211,10 @@ private fun InsightsHeader(
             Spacer(modifier = Modifier.size(4.dp))
             MonthSelector(
                 selectedMonth = selectedMonth,
+                customRange = customRange,
                 availableMonths = availableMonths,
-                onMonthSelected = onMonthSelected
+                onMonthSelected = onMonthSelected,
+                onRangeSelected = onRangeSelected
             )
         }
     }
@@ -194,10 +224,20 @@ private fun InsightsHeader(
 @Composable
 private fun MonthSelector(
     selectedMonth: MonthKey,
+    customRange: DayRange?,
     availableMonths: List<MonthKey>,
-    onMonthSelected: (MonthKey) -> Unit
+    onMonthSelected: (MonthKey) -> Unit,
+    onRangeSelected: (DayRange) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showRangeDialog by remember { mutableStateOf(false) }
+    if (showRangeDialog) {
+        DateRangeDialog(
+            initial = customRange,
+            onDismiss = { showRangeDialog = false },
+            onApply = { onRangeSelected(it); showRangeDialog = false }
+        )
+    }
 
     Box {
         Surface(
@@ -210,9 +250,10 @@ private fun MonthSelector(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = selectedMonth.shortLabel(),
+                    text = customRange?.label() ?: selectedMonth.shortLabel(),
                     style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1
                 )
                 Icon(
                     imageVector = Icons.Filled.ArrowDropDown,
@@ -233,7 +274,7 @@ private fun MonthSelector(
                 GlassMenuItem(
                     label = month.displayLabel(),
                     caption = if (month == MonthKey.current()) "This month" else null,
-                    selected = month == selectedMonth,
+                    selected = customRange == null && month == selectedMonth,
                     accent = accent,
                     onClick = {
                         onMonthSelected(month)
@@ -241,6 +282,17 @@ private fun MonthSelector(
                     }
                 )
             }
+            GlassMenuDivider()
+            GlassMenuItem(
+                label = customRange?.let { "Custom: ${it.label()}" } ?: "Custom range…",
+                selected = customRange != null,
+                accent = accent,
+                leadingIcon = Icons.Filled.DateRange,
+                onClick = {
+                    expanded = false
+                    showRangeDialog = true
+                }
+            )
         }
     }
 }
@@ -270,7 +322,7 @@ private fun SpendTrendCard(trend: SpendTrendUiState) {
                 )
 
                 trend.percentChangeVsPreviousMonth?.let { percent ->
-                    PercentChangeBadge(percent = percent)
+                    PercentChangeBadge(percent = percent, versus = trend.comparisonLabel)
                 }
             }
 
@@ -297,7 +349,7 @@ private fun SpendTrendCard(trend: SpendTrendUiState) {
             var selectedDay by remember(trend.dailyPoints, trend.monthLabel) { mutableStateOf<Int?>(null) }
             Text(
                 text = selectedDay?.let { i ->
-                    "${i + 1} ${trend.monthShortName} · ${formatRupees(trend.dailyPoints.getOrElse(i) { 0.0 })}"
+                    "${trend.pointLabels.getOrNull(i) ?: "${i + 1} ${trend.monthShortName}"} · ${formatRupees(trend.dailyPoints.getOrElse(i) { 0.0 })}"
                 } ?: "Tap or drag on the chart to see a day",
                 style = MaterialTheme.typography.labelSmall,
                 color = if (selectedDay != null) MaterialTheme.colorScheme.onSurface
@@ -387,7 +439,7 @@ private fun SpendStat(label: String, value: String) {
 }
 
 @Composable
-private fun PercentChangeBadge(percent: Double) {
+private fun PercentChangeBadge(percent: Double, versus: String = "last month") {
     val isIncrease = percent >= 0
     val containerColor = if (isIncrease) {
         MaterialTheme.colorScheme.errorContainer
@@ -408,9 +460,9 @@ private fun PercentChangeBadge(percent: Double) {
         Text(
             // Big jumps read better as a multiple: "3.2× last month", not "+220%".
             text = if (percent >= 200.0) {
-                "${"%.1f".format(1 + percent / 100.0).removeSuffix(".0")}× last month"
+                "${"%.1f".format(1 + percent / 100.0).removeSuffix(".0")}× $versus"
             } else {
-                "${if (isIncrease) "+" else ""}${"%.0f".format(percent)}% vs last month"
+                "${if (isIncrease) "+" else ""}${"%.0f".format(percent)}% vs $versus"
             },
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             style = MaterialTheme.typography.labelMedium,
@@ -457,7 +509,7 @@ private fun SpendTrendChart(
         }
         fromNorm = previous
         morph.snapTo(0f)
-        morph.animateTo(1f, androidx.compose.animation.core.tween(450, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+        morph.animateTo(1f, androidx.compose.animation.core.tween(320, easing = MotionEaseInOut))
         fromNorm = null
     }
 
@@ -603,7 +655,8 @@ private fun sampleAt(series: FloatArray, t: Float): Float {
 private fun CategoryBreakdownCard(
     items: List<CategorySummary>,
     title: String = "Where it went",
-    emptyText: String = "No expenses yet this month — category breakdown will appear as expenses come in."
+    emptyText: String = "No expenses in this period yet — the category breakdown will appear as expenses come in.",
+    onRowClick: ((CategorySummary) -> Unit)? = null
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -634,7 +687,7 @@ private fun CategoryBreakdownCard(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 items.forEachIndexed { index, summary ->
-                    CategoryBreakdownRow(summary = summary)
+                    CategoryBreakdownRow(summary = summary, onClick = onRowClick?.let { cb -> { cb(summary) } })
                     if (index != items.lastIndex) {
                         Spacer(modifier = Modifier.height(14.dp))
                     }
@@ -645,12 +698,21 @@ private fun CategoryBreakdownCard(
 }
 
 @Composable
-private fun CategoryBreakdownRow(summary: CategorySummary) {
+private fun CategoryBreakdownRow(summary: CategorySummary, onClick: (() -> Unit)? = null) {
     val darkTheme = isSystemInDarkTheme()
     val badgeBackground = summary.category.fgColor.copy(alpha = if (darkTheme) 0.28f else 0.18f)
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (onClick != null) Modifier
+                    .pressScale(source)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(interactionSource = source, indication = null, onClick = onClick)
+                else Modifier
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -708,7 +770,7 @@ private fun CategoryBreakdownRow(summary: CategorySummary) {
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "${summary.percent}% of this month",
+                text = "${summary.percent}% of this period",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -718,3 +780,91 @@ private fun CategoryBreakdownRow(summary: CategorySummary) {
 
 private fun formatRupees(amount: Double): String =
     formatRupeeIndian(kotlin.math.round(amount))
+
+/**
+ * Pick a custom period for Insights: quick presets (last 7 / 30 / 90 days)
+ * or any From and To day. Order doesn't matter; at most 366 days.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DateRangeDialog(
+    initial: DayRange?,
+    onDismiss: () -> Unit,
+    onApply: (DayRange) -> Unit
+) {
+    val context = LocalContext.current
+    val today = System.currentTimeMillis()
+    var from by remember { mutableStateOf(initial?.startMillis ?: DayRange.lastDays(7).startMillis) }
+    var to by remember { mutableStateOf(initial?.endMillis ?: today) }
+    val fmt = remember { java.text.SimpleDateFormat("EEE, d MMM yyyy", Locale.ENGLISH) }
+    val range = DayRange.of(from, to)
+    val tooLong = range.dayCount() > 366
+
+    fun pick(current: Long, onPicked: (Long) -> Unit) {
+        val c = java.util.Calendar.getInstance().apply { timeInMillis = current }
+        android.app.DatePickerDialog(
+            context,
+            { _, y, m, d ->
+                onPicked(java.util.Calendar.getInstance().apply { set(y, m, d, 12, 0, 0) }.timeInMillis)
+            },
+            c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH), c.get(java.util.Calendar.DAY_OF_MONTH)
+        ).apply { datePicker.maxDate = today }.show()
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        title = { Text("Custom range") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(7 to "7 days", 30 to "30 days", 90 to "90 days").forEach { (n, label) ->
+                        val r = DayRange.lastDays(n)
+                        val on = DayRange.of(from, to) == r
+                        Surface(
+                            onClick = { from = r.startMillis; to = r.endMillis },
+                            shape = RoundedCornerShape(50),
+                            color = if (on) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Text(
+                                label,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+                ModernTextField(
+                    value = fmt.format(java.util.Date(minOf(from, to))),
+                    onValueChange = {},
+                    label = "From",
+                    readOnly = true,
+                    onClick = { pick(minOf(from, to)) { from = it } }
+                )
+                ModernTextField(
+                    value = fmt.format(java.util.Date(maxOf(from, to))),
+                    onValueChange = {},
+                    label = "To",
+                    readOnly = true,
+                    onClick = { pick(maxOf(from, to)) { to = it } }
+                )
+                Text(
+                    if (tooLong) "Pick a range of up to a year." else "${range.dayCount()} days · ${range.label()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (tooLong) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                enabled = !tooLong,
+                onClick = { onApply(range) }
+            ) { Text("Show insights") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}

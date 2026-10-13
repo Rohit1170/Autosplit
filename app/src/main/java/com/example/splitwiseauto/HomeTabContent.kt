@@ -110,6 +110,19 @@ fun HomeScreen(
     val expenseSettlement by friendViewModel.expenseSettlement.collectAsState()
     val totalOwedToYou by friendViewModel.totalOwedToYou.collectAsState()
     val categories by homeViewModel.categorySummaries.collectAsState()
+    val todayCategories by homeViewModel.todayCategories.collectAsState()
+    var todayDrill by remember { mutableStateOf<CategorySummary?>(null) }
+    todayDrill?.let { summary ->
+        val data = remember(summary, todayCategories) { homeViewModel.todayDrill(summary) }
+        CategoryDetailSheet(
+            data = data,
+            onDismiss = { todayDrill = null },
+            onChanged = {
+                homeViewModel.refresh()
+                insightsViewModel.refresh()
+            }
+        )
+    }
     val accountSpending by homeViewModel.accountSpending.collectAsState()
     val mapExpenses by mapViewModel.expensesWithLocation.collectAsState()
     val mapLoaded by mapViewModel.loaded.collectAsState()
@@ -334,81 +347,6 @@ fun HomeScreen(
             onDismissPayment = { id -> pendingNotificationsViewModel.dismissPayment(id) }
         )
     }
-    if (showTripPicker) {
-        AlertDialog(
-            onDismissRequest = { showTripPicker = false },
-            title = { Text("Switch mode") },
-            text = {
-                Column {
-                    Surface(
-                        onClick = {
-                            activeTripId = null
-                            activeTripName = null
-                            ActiveTripStore.setActiveTrip(context, null, null)
-                            showTripPicker = false
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(imageVector = Icons.Filled.Home, contentDescription = null)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text("Main")
-                        }
-                    }
-                    trips.forEach { trip ->
-                        Surface(
-                            onClick = {
-                                activeTripId = trip.id
-                                activeTripName = trip.name
-                                ActiveTripStore.setActiveTrip(context, trip.id, trip.name)
-                                showTripPicker = false
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(imageVector = Icons.Filled.Place, contentDescription = null)
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Text(trip.name, modifier = Modifier.weight(1f))
-                                IconButton(onClick = {
-                                    coroutineScope.launch {
-                                        tripToDeleteCount = AppDatabase.getDatabase(context)
-                                            .expenseDao().countForTrip(trip.id)
-                                        tripToDelete = trip
-                                        showTripPicker = false
-                                    }
-                                }) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Delete,
-                                        contentDescription = "Delete ${trip.name}",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showTripPicker = false
-                    showNewTripDialog = true
-                }) { Text("+ New Trip") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showTripPicker = false }) { Text("Cancel") }
-            }
-        )
-    }
     tripToDelete?.let { trip ->
         DeleteTripDialog(
             trip = trip,
@@ -529,43 +467,29 @@ fun HomeScreen(
         floatingActionButton = {
 
             if (selectedTab == 1) {
-                FloatingActionButton(
-                    onClick = {
-                        showAddFriendDialog = true
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Add,
-                        contentDescription = "Add Friend"
-                    )
-                }
+                ModernFab(
+                    icon = Icons.Filled.Add,
+                    contentDescription = "Add Friend",
+                    onClick = { showAddFriendDialog = true }
+                )
             } else if (selectedTab == 0) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    SmallFloatingActionButton(
+                    ModernFab(
+                        icon = Icons.Filled.QrCodeScanner,
+                        contentDescription = "Scan & Pay",
+                        primary = false,
                         onClick = {
-                            context.startActivity(
-                                Intent(context, QrScanActivity::class.java)
-                            )
+                            context.startActivity(Intent(context, QrScanActivity::class.java))
                         }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.QrCodeScanner,
-                            contentDescription = "Scan & Pay"
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    FloatingActionButton(
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    ModernFab(
+                        icon = Icons.Filled.Add,
+                        contentDescription = "Add Expense",
                         onClick = {
-                            context.startActivity(
-                                Intent(context, ManualExpenseActivity::class.java)
-                            )
+                            context.startActivity(Intent(context, ManualExpenseActivity::class.java))
                         }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = "Add Expense"
-                        )
-                    }
+                    )
                 }
             }
         }
@@ -595,13 +519,14 @@ fun HomeScreen(
                     .padding(top = paddingValues.calculateTopPadding())
                     .padding(horizontal = 12.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Period chip: "Oct ▾" / "All time ▾". All time is pinned on
+                val chipView = androidx.compose.ui.platform.LocalView.current
+                // Period chip (left); trip chip + bell stay on the right.: "Oct ▾" / "All time ▾". All time is pinned on
                 // top of the menu, then months newest first.
                 Box {
                     Surface(
-                        onClick = { showMonthMenu = true },
+                        onClick = { Haptics.tap(chipView); showMonthMenu = true },
                         shape = RoundedCornerShape(50),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
@@ -659,26 +584,101 @@ fun HomeScreen(
                         }
                     }
                 }
-                Surface(
-                    onClick = { showTripPicker = true },
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                Spacer(modifier = Modifier.weight(1f))
+                // Trip / mode chip: same glass dropdown as the month chip.
+                Box {
+                    Surface(
+                        onClick = { Haptics.tap(chipView); showTripPicker = true },
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Place,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (activeTripName == null) Icons.Filled.Home else Icons.Filled.Place,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = activeTripName ?: "Main",
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 120.dp)
+                            )
+                            Icon(
+                                imageVector = Icons.Filled.ArrowDropDown,
+                                contentDescription = "Switch mode",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    GlassMenu(
+                        expanded = showTripPicker,
+                        onDismissRequest = { showTripPicker = false }
+                    ) {
+                        GlassMenuItem(
+                            label = "Main",
+                            selected = activeTripId == null,
+                            accent = HomeTokens.accent(),
+                            leadingIcon = Icons.Filled.Home,
+                            onClick = {
+                                activeTripId = null
+                                activeTripName = null
+                                ActiveTripStore.setActiveTrip(context, null, null)
+                                showTripPicker = false
+                            }
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = activeTripName ?: "Main",
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                        if (trips.isNotEmpty()) {
+                            GlassMenuDivider()
+                            GlassMenuHeader("Trips")
+                        }
+                        trips.forEach { trip ->
+                            GlassMenuItem(
+                                label = trip.name,
+                                selected = activeTripId == trip.id,
+                                accent = HomeTokens.accent(),
+                                leadingIcon = Icons.Filled.Place,
+                                onClick = {
+                                    activeTripId = trip.id
+                                    activeTripName = trip.name
+                                    ActiveTripStore.setActiveTrip(context, trip.id, trip.name)
+                                    showTripPicker = false
+                                },
+                                trailing = {
+                                    IconButton(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                tripToDeleteCount = AppDatabase.getDatabase(context)
+                                                    .expenseDao().countForTrip(trip.id)
+                                                tripToDelete = trip
+                                                showTripPicker = false
+                                            }
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Delete,
+                                            contentDescription = "Delete ${trip.name}",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                        GlassMenuDivider()
+                        GlassMenuAction(
+                            label = "New trip",
+                            accent = HomeTokens.accent(),
+                            icon = Icons.Filled.Add,
+                            onClick = {
+                                showTripPicker = false
+                                showNewTripDialog = true
+                            }
                         )
                     }
                 }
@@ -749,6 +749,8 @@ fun HomeScreen(
                             total = total,
                             heroTotal = heroTotal,
                             categories = categories,
+                            todayCategories = todayCategories,
+                            onTodayCategoryClick = { todayDrill = it },
                             accountSpending = accountSpending,
                             // Derived here, not in the ViewModel — FriendViewModel already
                             // exposes totalOwedToYou; "you owe" is the same aggregation
@@ -804,7 +806,8 @@ fun HomeScreen(
 
                     3 -> {
                         InsightsScreen(
-                            viewModel = insightsViewModel
+                            viewModel = insightsViewModel,
+                            onDataChanged = { homeViewModel.refresh() }
                         )
                     }
                 }
@@ -822,6 +825,8 @@ private fun HomeTabContent(
     total: Double,
     heroTotal: Pair<String, Double>?,
     categories: List<CategorySummary>,
+    todayCategories: List<CategorySummary> = emptyList(),
+    onTodayCategoryClick: (CategorySummary) -> Unit = {},
     accountSpending: List<AccountSpendingSummary>,
     owedToYou: Double,
     youOwe: Double,
@@ -1010,18 +1015,18 @@ private fun HomeTabContent(
         // Category treemap — already a tinted, icon-labeled mosaic (see
         // TreemapView.kt); left as-is, just given a heading to match the
         // rest of the redesigned sections.
-        if (categories.isNotEmpty()) {
+        if (categories.isNotEmpty() || todayCategories.isNotEmpty()) {
 
             item {
                 Column(modifier = Modifier.entranceRiseFade { categoriesRiseProgress.value }) {
-                    Text(
-                        text = "By category",
-                        style = MaterialTheme.typography.titleMedium
+                    // Today only: the month-by-category view lives on Insights.
+                    CategoryDonutCard(
+                        items = todayCategories,
+                        periodLabel = "Today",
+                        title = "Today by category",
+                        emptyText = "Nothing spent yet today",
+                        onItemClick = onTodayCategoryClick
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    // Minimal: one thin proportion bar + quiet rows (was a
-                    // big treemap that pulled all the attention).
-                    CategoryStrip(items = categories)
 
                     Spacer(
                         modifier = Modifier.height(20.dp)
@@ -1688,6 +1693,7 @@ private fun HomeExpenseRow(
     onLongPress: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val view = androidx.compose.ui.platform.LocalView.current
     // Use the expense's own saved category, not a fresh merchant-keyword
     // guess — this row used to call categorize(item.expense.merchant),
     // which silently ignored any category the user had actually edited
@@ -1714,12 +1720,12 @@ private fun HomeExpenseRow(
             .pointerInput(item.expense.id) {
                 detectTapGestures(
                     onPress = {
-                        rowScope.launch { pressScale.animateTo(0.97f, spring(stiffness = Spring.StiffnessMedium)) }
+                        rowScope.launch { pressScale.animateTo(0.97f, tween(120, easing = MotionEaseOut)) }
                         tryAwaitRelease()
-                        rowScope.launch { pressScale.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium)) }
+                        rowScope.launch { pressScale.animateTo(1f, tween(200, easing = MotionEaseOut)) }
                     },
-                    onTap = { onTap?.invoke() },
-                    onLongPress = { onLongPress?.invoke() }
+                    onTap = { Haptics.tap(view); onTap?.invoke() },
+                    onLongPress = { Haptics.hold(view); onLongPress?.invoke() }
                 )
             }
     ) {
@@ -1886,6 +1892,7 @@ fun ExpenseCard(
     onTap: (() -> Unit)? = null,
     onLongPress: (() -> Unit)? = null
 ) {
+    val view = androidx.compose.ui.platform.LocalView.current
     val category = categorize(
         item.expense.merchant
     )
@@ -1900,8 +1907,8 @@ fun ExpenseCard(
             .fillMaxWidth()
             .pointerInput(item.expense.id) {
                 detectTapGestures(
-                    onTap = { onTap?.invoke() },
-                    onLongPress = { onLongPress?.invoke() }
+                    onTap = { Haptics.tap(view); onTap?.invoke() },
+                    onLongPress = { Haptics.hold(view); onLongPress?.invoke() }
                 )
             },
         shape = RoundedCornerShape(12.dp),
@@ -2579,8 +2586,9 @@ private fun DeleteTripDialog(
 private fun NotificationBadge(count: Int) {
     val pop = remember { Animatable(0f) }
     LaunchedEffect(count) {
-        pop.snapTo(0.4f)
-        pop.animateTo(1f, spring(dampingRatio = 0.4f, stiffness = Spring.StiffnessMedium))
+        // Occasional event: a small pop is fine, but subtle (never from 0).
+        pop.snapTo(0.6f)
+        pop.animateTo(1f, spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium))
     }
     Box(
         modifier = Modifier
@@ -2625,91 +2633,3 @@ private object HomePeriodStore {
 }
 
 
-/**
- * Minimal category breakdown: a thin segmented bar showing each category's
- * share, and up to 4 compact rows (dot · name · % · amount). "+N more"
- * expands the rest. Segments glide to new sizes when the month changes.
- */
-@Composable
-private fun CategoryStrip(items: List<CategorySummary>) {
-    if (items.isEmpty()) return
-    var expanded by remember { mutableStateOf(false) }
-    val total = items.sumOf { it.total }.coerceAtLeast(0.01)
-    val gap = 3.dp
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .modernCard(base = HomeTokens.card2(), radius = 18.dp)
-            .padding(horizontal = 14.dp, vertical = 14.dp)
-    ) {
-        // Proportion bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(8.dp)
-                .clip(RoundedCornerShape(50)),
-            horizontalArrangement = Arrangement.spacedBy(gap)
-        ) {
-            items.forEach { item ->
-                val share by animateFloatAsState(
-                    targetValue = (item.total / total).toFloat().coerceAtLeast(0.005f),
-                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(share)
-                        .fillMaxHeight()
-                        .background(item.category.fgColor.copy(alpha = 0.85f))
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-        val visible = if (expanded) items else items.take(4)
-        visible.forEach { item ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(item.category.fgColor, CircleShape)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = item.category.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "${item.percent}%",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = HomeTokens.mut(),
-                    modifier = Modifier.padding(end = 12.dp)
-                )
-                Text(
-                    text = formatRupeeIndian(kotlin.math.round(item.total)),
-                    style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
-        if (items.size > 4) {
-            Text(
-                text = if (expanded) "Show less" else "+${items.size - 4} more",
-                style = MaterialTheme.typography.labelMedium,
-                color = HomeTokens.accent(),
-                modifier = Modifier
-                    .padding(top = 6.dp)
-                    .clickable { expanded = !expanded }
-            )
-        }
-    }
-}

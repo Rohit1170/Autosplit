@@ -45,6 +45,65 @@ data class MonthKey(val year: Int, val month: Int) { // month is 1-12
     }
 }
 
+/**
+ * A custom Insights period: whole days, [startMillis] = 00:00 of the first
+ * day, [endMillis] = 23:59:59.999 of the last day (both inclusive).
+ */
+data class DayRange(val startMillis: Long, val endMillis: Long) {
+
+    /** Number of calendar days in the range (inclusive). */
+    fun dayCount(): Int {
+        var n = 0
+        val c = Calendar.getInstance().apply { timeInMillis = startMillis }
+        while (c.timeInMillis <= endMillis) { n++; c.add(Calendar.DAY_OF_MONTH, 1) }
+        return n
+    }
+
+    fun contains(millis: Long) = millis in startMillis..endMillis
+
+    /** "12 – 18 Oct", "28 Sep – 4 Oct", "28 Dec 25 – 3 Jan 26". */
+    fun label(): String {
+        val s = Calendar.getInstance().apply { timeInMillis = startMillis }
+        val e = Calendar.getInstance().apply { timeInMillis = endMillis }
+        val thisYear = Calendar.getInstance().get(Calendar.YEAR)
+        val sameYear = s.get(Calendar.YEAR) == e.get(Calendar.YEAR)
+        val showYear = !sameYear || s.get(Calendar.YEAR) != thisYear
+        val dm = SimpleDateFormat("d MMM", Locale.ENGLISH)
+        val dmy = SimpleDateFormat("d MMM yy", Locale.ENGLISH)
+        return when {
+            sameYear && s.get(Calendar.DAY_OF_YEAR) == e.get(Calendar.DAY_OF_YEAR) ->
+                (if (showYear) dmy else dm).format(s.time)
+            sameYear && s.get(Calendar.MONTH) == e.get(Calendar.MONTH) ->
+                "${s.get(Calendar.DAY_OF_MONTH)} – ${(if (showYear) dmy else dm).format(e.time)}"
+            else -> "${(if (showYear) dmy else dm).format(s.time)} – ${(if (showYear) dmy else dm).format(e.time)}"
+        }
+    }
+
+    companion object {
+        /** Whole days from [fromDay] to [toDay] (any time on those days; order-insensitive). */
+        fun of(fromDay: Long, toDay: Long): DayRange {
+            val a = minOf(fromDay, toDay)
+            val b = maxOf(fromDay, toDay)
+            val start = Calendar.getInstance().apply {
+                timeInMillis = a; set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            }
+            val end = Calendar.getInstance().apply {
+                timeInMillis = b; set(Calendar.HOUR_OF_DAY, 23); set(Calendar.MINUTE, 59)
+                set(Calendar.SECOND, 59); set(Calendar.MILLISECOND, 999)
+            }
+            return DayRange(start.timeInMillis, end.timeInMillis)
+        }
+
+        /** The last [days] days, ending today. */
+        fun lastDays(days: Int): DayRange {
+            val now = System.currentTimeMillis()
+            val from = Calendar.getInstance().apply { add(Calendar.DAY_OF_MONTH, -(days - 1)) }.timeInMillis
+            return of(from, now)
+        }
+    }
+}
+
 data class SpendTrendUiState(
     val monthLabel: String = "",
     val isCurrentMonth: Boolean = true,
@@ -72,7 +131,11 @@ data class SpendTrendUiState(
     // What the same days of last month added up to (the % badge's baseline).
     val previousComparableTotal: Double = 0.0,
     // "Oct" — for the tapped-day label on the chart.
-    val monthShortName: String = ""
+    val monthShortName: String = "",
+    // Custom range only: the date of each chart point ("12 Oct"), and what
+    // the % badge compares against ("previous 7 days").
+    val pointLabels: List<String> = emptyList(),
+    val comparisonLabel: String = "last month"
 )
 
 /** Below this, "vs last month" is meaningless (+18693% from ₹370), so it's hidden. */
@@ -103,6 +166,12 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
     // selection forward to the new month. If the user deliberately picked
     // an older month, this is false and their choice is left alone.
     private var followCurrentMonth = true
+
+    // Non-null while the user is looking at a custom date range instead of a
+    // calendar month. Everything on the tab (trend, categories, locations)
+    // then uses this range.
+    private val _customRange = MutableStateFlow<DayRange?>(null)
+    val customRange: StateFlow<DayRange?> = _customRange
 
     private val _availableMonths = MutableStateFlow<List<MonthKey>>(listOf(MonthKey.current()))
     val availableMonths: StateFlow<List<MonthKey>> = _availableMonths
@@ -149,7 +218,7 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
                     .sortedWith(compareByDescending<MonthKey> { it.year }.thenByDescending { it.month })
 
             val nowMonth = MonthKey.current()
-            if (followCurrentMonth && _selectedMonth.value != nowMonth) {
+            if (followCurrentMonth && _customRange.value == null && _selectedMonth.value != nowMonth) {
                 _selectedMonth.value = nowMonth
             }
 
@@ -161,17 +230,27 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
 
     fun selectMonth(month: MonthKey) {
         followCurrentMonth = month == MonthKey.current()
+        _customRange.value = null
         _selectedMonth.value = month
         recomputeSpendTrend()
         recomputeCategoryBreakdown()
     }
 
-    private fun recomputeCategoryBreakdown() {
-        val month = _selectedMonth.value
+    /** Show Insights for a custom range of whole days instead of a month. */
+    fun selectRange(range: DayRange) {
+        followCurrentMonth = false
+        _customRange.value = range
+        recomputeSpendTrend()
+        recomputeCategoryBreakdown()
+    }
 
+    private fun inSelectedPeriod(millis: Long): Boolean =
+        _customRange.value?.contains(millis) ?: (MonthKey.fromMillis(millis) == _selectedMonth.value)
+
+    private fun recomputeCategoryBreakdown() {
         val expensesInMonth = allExpenses.filter { item ->
             val millis = item.expense.timestampMillis ?: return@filter false
-            MonthKey.fromMillis(millis) == month
+            inSelectedPeriod(millis)
         }
 
         // ONE dimension per list. "Where it went" = categories across every
@@ -219,6 +298,7 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun recomputeSpendTrend() {
+        _customRange.value?.let { recomputeRangeTrend(it); return }
         val month = _selectedMonth.value
         val hasAnyDated = allExpenses.any { it.expense.timestampMillis != null }
 
@@ -320,6 +400,149 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
             monthShortName = java.text.SimpleDateFormat("MMM", java.util.Locale.ENGLISH)
                 .format(month.monthStartCalendar().time),
             isTripMode = isTripMode
+        )
+    }
+
+    /**
+     * Trend for a custom range: one point per day from the first day to the
+     * last (or to today, if the range runs into the future). No month-end
+     * projection; the % badge compares with the same number of days just
+     * before the range.
+     */
+    private fun recomputeRangeTrend(range: DayRange) {
+        val hasAnyDated = allExpenses.any { it.expense.timestampMillis != null }
+        val now = System.currentTimeMillis()
+        val lastMillis = minOf(range.endMillis, DayRange.of(now, now).endMillis)
+
+        val dayStarts = mutableListOf<Long>()
+        val c = Calendar.getInstance().apply { timeInMillis = range.startMillis }
+        while (c.timeInMillis <= lastMillis) {
+            dayStarts += c.timeInMillis
+            c.add(Calendar.DAY_OF_MONTH, 1)
+        }
+        val days = dayStarts.size.coerceAtLeast(1)
+        val daily = DoubleArray(dayStarts.size)
+        fun dayIndex(millis: Long): Int {
+            // Calendar math, not millis / 86_400_000, so DST-free zones and
+            // odd offsets still land on the right day.
+            val i = dayStarts.indexOfLast { it <= millis }
+            return if (i >= 0 && millis <= lastMillis) i else -1
+        }
+
+        val isTripMode = currentTripId != null
+        var count = 0
+        var tripSpend = 0.0
+        val tripIds = mutableSetOf<Int>()
+        allExpenses.forEach { item ->
+            val millis = item.expense.timestampMillis ?: return@forEach
+            val i = dayIndex(millis)
+            if (i < 0) return@forEach
+            daily[i] += item.expense.amount
+            count++
+            if (!isTripMode) item.expense.tripId?.let { tripSpend += item.expense.amount; tripIds += it }
+        }
+        val total = daily.sum()
+        val average = if (isTripMode) total / days else (total - tripSpend) / days
+
+        // Same number of days immediately before the range.
+        val prevEnd = range.startMillis - 1
+        val prevStart = Calendar.getInstance().apply {
+            timeInMillis = range.startMillis; add(Calendar.DAY_OF_MONTH, -days)
+        }.timeInMillis
+        val previous = allExpenses.sumOf { item ->
+            val m = item.expense.timestampMillis ?: return@sumOf 0.0
+            if (m in prevStart..prevEnd) item.expense.amount else 0.0
+        }
+        val percent = if (previous >= MIN_COMPARISON_BASELINE) ((total - previous) / previous) * 100.0 else null
+
+        val labelFmt = SimpleDateFormat("d MMM", Locale.ENGLISH)
+        _spendTrend.value = SpendTrendUiState(
+            monthLabel = range.label(),
+            isCurrentMonth = range.contains(now),
+            totalSoFar = total,
+            percentChangeVsPreviousMonth = percent,
+            dailyPoints = daily.toList(),
+            projectedMonthEnd = null,
+            hasAnyDatedExpenses = hasAnyDated,
+            transactionCount = count,
+            dailyAverage = average,
+            excludedTripSpend = tripSpend,
+            excludedTripLabel = when {
+                tripSpend <= 0.0 -> null
+                tripIds.size == 1 -> tripNamesById[tripIds.first()]?.let { "$it trip" } ?: "a trip"
+                else -> "${tripIds.size} trips"
+            },
+            notEnoughToProject = false,
+            isTripMode = isTripMode,
+            regularProjection = null,
+            previousComparableTotal = previous,
+            monthShortName = "",
+            pointLabels = dayStarts.map { labelFmt.format(java.util.Date(it)) },
+            comparisonLabel = "previous ${if (days == 1) "day" else "$days days"}"
+        )
+    }
+
+    /** Re-read everything (e.g. after a payment was moved to another category). */
+    fun refresh() = loadExpenses(currentTripId)
+
+    /**
+     * The selected period and the one it's compared with:
+     *  - custom range: the same number of days just before it
+     *  - this month: the same days of last month (1st..today's date)
+     *  - an older month: the whole previous month
+     */
+    private fun periodWindows(): Triple<LongRange, LongRange, String> {
+        _customRange.value?.let { r ->
+            val n = r.dayCount()
+            val prevStart = Calendar.getInstance().apply {
+                timeInMillis = r.startMillis; add(Calendar.DAY_OF_MONTH, -n)
+            }.timeInMillis
+            return Triple(r.startMillis..r.endMillis, prevStart until r.startMillis,
+                DayRange(prevStart, r.startMillis - 1).label())
+        }
+        val m = _selectedMonth.value
+        val start = m.monthStartCalendar().timeInMillis
+        val nextStart = Calendar.getInstance().apply { timeInMillis = start; add(Calendar.MONTH, 1) }.timeInMillis
+        val prev = m.previous()
+        val prevStart = prev.monthStartCalendar().timeInMillis
+        val prevName = SimpleDateFormat("MMMM", Locale.ENGLISH).format(prev.monthStartCalendar().time)
+        return if (m == MonthKey.current()) {
+            val now = System.currentTimeMillis()
+            val prevEnd = minOf(prevStart + (now - start), start - 1)
+            Triple(start..now, prevStart..prevEnd, DayRange.of(prevStart, prevEnd).label())
+        } else {
+            Triple(start until nextStart, prevStart until start, prevName)
+        }
+    }
+
+    private fun locationName(e: ExpenseWithParticipants): String =
+        e.expense.tripId?.let { tripNamesById[it] ?: "Trip" } ?: "Main"
+
+    /** Data for the drill-down sheet of one "Where it went" / "By location" row. */
+    fun drill(summary: CategorySummary, byLocation: Boolean): DrillData {
+        val (cur, prev, prevLabel) = periodWindows()
+        fun matches(e: ExpenseWithParticipants) =
+            if (byLocation) locationName(e) == summary.category.name
+            else categoryByName(e.expense.category).name == summary.category.name
+        val items = allExpenses
+            .filter { e -> e.expense.timestampMillis?.let { it in cur } == true && matches(e) }
+            .sortedByDescending { it.expense.timestampMillis }
+        val previous = allExpenses
+            .filter { e -> e.expense.timestampMillis?.let { it in prev } == true && matches(e) }
+            .sumOf { it.expense.amount }
+        return DrillData(
+            title = summary.category.name,
+            icon = summary.category.icon,
+            color = summary.category.fgColor,
+            periodLabel = _customRange.value?.label()
+                ?: (if (_selectedMonth.value == MonthKey.current())
+                    DayRange.of(_selectedMonth.value.monthStartCalendar().timeInMillis, System.currentTimeMillis()).label()
+                else _selectedMonth.value.displayLabel()),
+            percent = summary.percent,
+            items = items,
+            previousTotal = previous,
+            previousLabel = prevLabel,
+            canRecategorize = !byLocation
         )
     }
 }

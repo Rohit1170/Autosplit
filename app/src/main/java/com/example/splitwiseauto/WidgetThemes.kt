@@ -59,13 +59,19 @@ object WidgetThemes {
         }
         views.setInt(R.id.widget_root, "setBackgroundResource", background)
 
-        // Material You: the big total and header pick up the wallpaper accent.
+        // Material You. Colours are passed as RESOURCE ids (setColor, API 31),
+        // so the launcher resolves them itself and re-resolves them when the
+        // wallpaper changes. The old code resolved them here with getColor(),
+        // which froze the colour of the moment into the widget: it never
+        // followed a new wallpaper until Splitlee happened to update it.
+        // (A view a smaller layout doesn't have, e.g. the date line, is
+        // simply skipped by RemoteViews.)
         if (theme == WidgetTheme.WALLPAPER && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val accent = context.getColor(android.R.color.system_accent1_100)
-            val soft = context.getColor(android.R.color.system_neutral2_200)
-            views.setTextColor(R.id.widget_total, accent)
-            views.setTextColor(R.id.widget_total_label, soft)
-            runCatching { views.setTextColor(R.id.widget_date, soft) }
+            views.setColor(R.id.widget_total, "setTextColor", android.R.color.system_accent1_100)
+            views.setColor(R.id.widget_total_label, "setTextColor", android.R.color.system_neutral2_200)
+            views.setColor(R.id.widget_date, "setTextColor", android.R.color.system_neutral2_200)
+            views.setInt(R.id.widget_scan, "setBackgroundResource", R.drawable.widget_button_bg_you)
+            views.setInt(R.id.widget_add, "setBackgroundResource", R.drawable.widget_button_bg_you)
         }
     }
 }

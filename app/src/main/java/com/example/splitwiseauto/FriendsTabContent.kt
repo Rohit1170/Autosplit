@@ -374,12 +374,13 @@ private fun FriendExpenseCard(
     muted: Boolean = false
 ) {
     val hasBalance = abs(balance.netAmount) > 0.01
+    val view = androidx.compose.ui.platform.LocalView.current
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .pointerInput(friend.id) {
-                detectTapGestures(onLongPress = { onLongPress() })
+                detectTapGestures(onLongPress = { Haptics.hold(view); onLongPress() })
             },
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
