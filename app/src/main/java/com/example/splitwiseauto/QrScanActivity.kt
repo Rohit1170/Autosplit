@@ -224,7 +224,9 @@ class QrScanActivity : ComponentActivity() {
     private val upiPayLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val paymentId = inFlightPaymentId ?: return@registerForActivityResult
-            val response = parseUpiResponse(result.data?.getStringExtra("response"))
+            val rawResponse = result.data?.getStringExtra("response")
+            PaymentDiagnostics.finished(result.resultCode, rawResponse)
+            val response = parseUpiResponse(rawResponse)
             lifecycleScope.launch(Dispatchers.IO) {
                 applyUpiAppResult(paymentId, response)
             }
@@ -240,6 +242,7 @@ class QrScanActivity : ComponentActivity() {
                 val info = packageManager.getApplicationInfo(component.packageName, 0)
                 packageManager.getApplicationLabel(info).toString()
             }.getOrNull()
+            PaymentDiagnostics.app = "${upiAppName ?: "?"} (${component.packageName})"
         }
     }
 
@@ -353,6 +356,7 @@ class QrScanActivity : ComponentActivity() {
             val paymentRef = UpiIntentPayments.newPaymentRef()
             val uri = UpiIntentPayments.buildPayUri(request, amountMinor, remarks, paymentRef)
             val upiIntent = Intent(Intent.ACTION_VIEW, uri)
+            PaymentDiagnostics.started(paymentRef, request.raw, uri.toString())
 
             // Which installed apps handle upi://pay. Deliberately NOT gated on
             // Intent.resolveActivity(): that only accepts a single "default"
@@ -1675,6 +1679,14 @@ private fun PaymentStatusScreen(
                 Spacer(modifier = Modifier.height(12.dp))
                 NoticeCard(text = it, style = style)
             }
+            // The exact link sent + the UPI app's raw reply, for diagnosing
+            // failures like "receiver's UPI ID not available".
+            if (status == PendingPaymentStatus.FAILED && !paidViaUssd &&
+                PaymentDiagnostics.paymentId == current.id
+            ) {
+                Spacer(modifier = Modifier.height(10.dp))
+                TechnicalDetails()
+            }
             checkMessage?.let {
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
@@ -2027,5 +2039,43 @@ private fun decodeQr(imageProxy: ImageProxy, reader: QRCodeReader): String? {
         null
     } finally {
         reader.reset()
+    }
+}
+
+/** Collapsed by default; shows [PaymentDiagnostics.report] with a Copy button. */
+@Composable
+private fun TechnicalDetails() {
+    val context = LocalContext.current
+    var open by remember { mutableStateOf(false) }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        TextButton(onClick = { open = !open }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text(if (open) "Hide technical details" else "Show technical details")
+        }
+        if (open) {
+            val report = remember { PaymentDiagnostics.report() }
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(
+                        report,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("Splitlee payment details", report))
+                            android.widget.Toast.makeText(context, "Copied", android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) { Text("Copy") }
+                }
+            }
+        }
     }
 }

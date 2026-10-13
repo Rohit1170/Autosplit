@@ -159,3 +159,47 @@ fun parseUpiResponse(response: String?): UpiAppResponse? {
         approvalRefNo = fields["approvalrefno"]
     )
 }
+
+/**
+ * What exactly went to the UPI app and what it answered, for the last Scan &
+ * Pay attempt (memory only, cleared when the app process ends). Shown under
+ * "Technical details" on the payment screen so a failure can be diagnosed
+ * from facts: the exact upi:// link we sent, the original QR text, which app
+ * was picked, and the app's raw reply including its responseCode.
+ * Holds no PIN or bank data — only what the QR and the UPI app return.
+ */
+object PaymentDiagnostics {
+    @Volatile var paymentId: String? = null; private set
+    @Volatile var rawQr: String? = null; private set
+    @Volatile var sentUri: String? = null; private set
+    @Volatile var app: String? = null
+    @Volatile var resultCode: Int? = null; private set
+    @Volatile var rawResponse: String? = null; private set
+
+    fun started(paymentId: String, rawQr: String, sentUri: String) {
+        this.paymentId = paymentId
+        this.rawQr = rawQr
+        this.sentUri = sentUri
+        app = null
+        resultCode = null
+        rawResponse = null
+    }
+
+    fun finished(resultCode: Int, rawResponse: String?) {
+        this.resultCode = resultCode
+        this.rawResponse = rawResponse
+    }
+
+    fun report(): String = buildString {
+        appendLine("App: ${app ?: "unknown (chooser gave no answer)"}")
+        appendLine("Result code: ${resultCode ?: "-"} (-1 = OK, 0 = cancelled/none)")
+        appendLine("App response: ${rawResponse ?: "(none)"}")
+        parseUpiResponse(rawResponse)?.responseCode?.let { appendLine("responseCode: $it") }
+        appendLine()
+        appendLine("Sent link:")
+        appendLine(sentUri ?: "-")
+        appendLine()
+        appendLine("Scanned QR:")
+        append(rawQr ?: "-")
+    }
+}

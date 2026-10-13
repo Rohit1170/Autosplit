@@ -3,6 +3,8 @@ package com.example.splitwiseauto
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TransactionParserTest {
@@ -342,5 +344,35 @@ class TransactionParserTest {
         )
         assertNotNull(t)
         assertEquals("750.00", t?.amount)
+    }
+
+    // ---- Links / bare refs are never the merchant ----
+
+    @Test
+    fun iciciCardSpendWithEmiLinkFooterIsUnknownMerchant() {
+        // Real SMS (12 Oct 26): no payee named; the only "at" texts are a
+        // bare UPI ref and an EMI marketing link. Merchant must be Unknown,
+        // never "https://icici".
+        val t = parseBankSms(
+            "Rs 6,478.00 spent on ICICI Bank Card XX1000 on 12-Oct-26 at UPI-66519120788. " +
+                "Avl Lmt: Rs 50,457.11. To dispute, call 18002662/SMS BLOCK 1000 to 9215676766. " +
+                "To convert this txn to EMI give a missed call on 9924667667. " +
+                "Know more about EMI conversion at https://icici.co/ICICIT/j/87eb8714",
+            sender = "JD-ICICIT-S"
+        )
+        assertNotNull(t)
+        assertEquals("DEBIT", t?.type)
+        assertEquals("6478.00", t?.amount)
+        assertEquals("Unknown", t?.merchant)
+    }
+
+    @Test
+    fun domainNamedMerchantIsKept() {
+        // "Amazon.in" is a real merchant, not a link (no path).
+        assertFalse(looksLikeLinkOrRef("Amazon.in"))
+        assertFalse(looksLikeLinkOrRef("FlipkartInterne"))
+        assertTrue(looksLikeLinkOrRef("https://icici"))
+        assertTrue(looksLikeLinkOrRef("icici.co/ICICIT/j/87eb8714"))
+        assertTrue(looksLikeLinkOrRef("UPI-66519120788"))
     }
 }

@@ -523,6 +523,22 @@ fun parseBankSms(
  * Promotional headers (the `-P` suffix) are rejected too: they're ads, not
  * transaction alerts.
  */
+/**
+ * True for text that can't be a merchant name: a link ("https://icici",
+ * "icici.co/x", "www.x.com") or a bare UPI/transaction reference
+ * ("UPI-66519120788"). Those SMS then show "Unknown" instead of junk.
+ */
+internal fun looksLikeLinkOrRef(text: String): Boolean {
+    val t = text.trim().lowercase(Locale.ROOT)
+    if (t.isEmpty()) return true
+    if ("://" in t || t.startsWith("http") || t.startsWith("www.")) return true
+    // A domain WITH a path ("icici.co/ICICIT/j/..") is a link; a bare
+    // "Amazon.in" / "Flipkart.com" is a real merchant name and stays.
+    if (Regex("""^[a-z0-9-]+\.(co|com|in|net|org|me|ly|io)/""").containsMatchIn(t)) return true
+    if (Regex("""^upi[-/ ]?\d{6,}$""").matches(t)) return true
+    return t.replace(Regex("[^0-9]"), "").length >= 8 && t.count { it.isLetter() } <= 3
+}
+
 fun isTransactionalSender(sender: String): Boolean {
     // Deliberately loose. The only thing that must never become an expense is
     // a message from a PERSON, and a person always shows up as a phone
@@ -646,10 +662,14 @@ private fun extractMerchant(message: String): String {
     // MERCHANT on DATE" — an earlier "at" can belong to unrelated text.
     val stopLookahead =
         """(?=\s*(?:\.(?!\d)|;|$|\bon\s+\d|\bupi\b|\bref|\brrn\b|\butr\b|\btxn\b|\btrf\b|\bvia\b|\bavl\b|\bbal\b|\binfo\b|\bnot\s+you\b|\bnever\s+share\b|\bcredited\b))"""
+    // Skip "at <link>" from marketing footers ("Know more about EMI
+    // conversion at https://icici.co/...") — a URL is never the merchant.
     val atMerchant = Regex(
         """\bat\s+(.+?)$stopLookahead""",
         RegexOption.IGNORE_CASE
-    ).findAll(message).toList().lastOrNull()?.groupValues?.getOrNull(1)
+    ).findAll(message).toList()
+        .mapNotNull { it.groupValues.getOrNull(1) }
+        .lastOrNull { !looksLikeLinkOrRef(it) }
 
     // Card spends: "... spent using ICICI Bank Card XX1000 on 09-Oct-26 on
     // FlipkartInterne. Avl Limit..." — the merchant follows the DATE, after
@@ -685,8 +705,9 @@ private fun extractMerchant(message: String): String {
             it.replace(Regex("[^0-9]"), "").length >= 6
     }
 
-    val candidate = knownMerchantKeyword(message) ?: creditedMerchant ?: atMerchant ?: dateThenMerchant ?:
-        vpaMerchant ?: toMerchant
+    val candidate = listOf(
+        knownMerchantKeyword(message), creditedMerchant, atMerchant, dateThenMerchant, vpaMerchant, toMerchant
+    ).firstOrNull { it != null && !looksLikeLinkOrRef(it) }
     return candidate
         ?.trim()
         ?.trim('/', '-')
