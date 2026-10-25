@@ -88,7 +88,7 @@ class ExpenseDetailActivity : ComponentActivity() {
         }
 
         setContent {
-            SplitWiseAutoTheme {
+            SplitleeTheme {
                 var expense by remember { mutableStateOf<Expense?>(null) }
                 var participants by remember { mutableStateOf<List<ExpenseParticipant>>(emptyList()) }
                 var linkedPayment by remember { mutableStateOf<PendingPayment?>(null) }
@@ -276,6 +276,17 @@ private fun ExpenseSummaryCard(expense: Expense) {
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
             )
+            // Foreign-currency spend: what the bank SMS said.
+            val fxCur = expense.originalCurrency
+            val fxAmt = expense.originalAmount
+            if (fxCur != null && fxAmt != null) {
+                Text(
+                    text = ForeignCurrency.label(fxCur, fxAmt) +
+                        if (expense.fxEstimated) " · rupee amount is an estimate" else " · rupee amount charged by bank",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -416,6 +427,10 @@ private fun ExpenseParticipantsCard(
     settlement: SettleStatus.ExpenseSettlement? = null
 ) {
     val context = LocalContext.current
+    var remindTarget by remember { mutableStateOf<Triple<String, Double, String>?>(null) }
+    remindTarget?.let { (who, amt, what) ->
+        RemindSheet(friendName = who, amount = amt, forWhat = what, onDismiss = { remindTarget = null })
+    }
     // Status per person: the payer "Paid"; everyone else's share is
     // Settled / part paid / Pending, derived by SettleStatus from the
     // Friends balances (settle-ups cover the oldest splits first).
@@ -520,17 +535,14 @@ private fun ExpenseParticipantsCard(
                                 Spacer(modifier = Modifier.height(4.dp))
                                 OutlinedButton(
                                     onClick = {
-                                        // Honest handoff: this only opens the device's
-                                        // own share sheet with a prefilled message — the
-                                        // person still has to pick an app and hit send.
-                                        val message = "Hey ${participant.personName}, just a reminder — " +
-                                            "you owe ${formatRupeeIndian(remindAmount)} " +
-                                            "for ${expense.merchant} (${expense.date})."
-                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_TEXT, message)
-                                        }
-                                        context.startActivity(Intent.createChooser(sendIntent, "Remind ${participant.personName}"))
+                                        // Remind sheet: WhatsApp / SMS / other apps with a
+                                        // prefilled message (+ your pay QR). The person
+                                        // still presses Send themselves.
+                                        remindTarget = Triple(
+                                            participant.personName,
+                                            remindAmount,
+                                            "${expense.merchant} (${expense.date})"
+                                        )
                                     },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                                     modifier = Modifier.height(28.dp)

@@ -32,6 +32,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.ui.platform.LocalContext
 
 /**
  * Full-width bottom sheet used instead of AlertDialog for list content.
@@ -50,7 +57,11 @@ fun AppSheet(
     glass: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    // Material You: plain surface sheet, no glass.
+    val glass = glass && !AppThemeStore.isMaterial
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+      // Dialogs get the phone's own light/dark; re-apply the app setting.
+      ProvideNightMode {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -61,6 +72,7 @@ fun AppSheet(
                 ),
             contentAlignment = Alignment.BottomCenter
         ) {
+            SheetRise {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -140,6 +152,27 @@ fun AppSheet(
                 }
               }
             }
+            }
         }
+      }
+    }
+}
+
+/**
+ * Bottom sheets rise into place: a short slide up with a fade (240 ms,
+ * ease-out). Skipped when the phone has animations turned off.
+ */
+@Composable
+internal fun SheetRise(content: @Composable () -> Unit) {
+    val calm = reducedMotion(LocalContext.current)
+    val state = remember { MutableTransitionState(calm) }
+    state.targetState = true
+    AnimatedVisibility(
+        visibleState = state,
+        enter = slideInVertically(tween(240, easing = MotionEaseOut)) { it / 4 } +
+            fadeIn(tween(200, easing = MotionEaseOut)),
+        exit = ExitTransition.None
+    ) {
+        content()
     }
 }

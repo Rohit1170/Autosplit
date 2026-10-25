@@ -155,6 +155,11 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
     private var tripNamesById: Map<Int, String> = emptyMap()
     private var currentTripId: Int? = null
 
+    // Trip mode shows the WHOLE trip (its own date range), not one calendar
+    // month, so a trip across two months isn't split. Set when a trip is
+    // opened; you can still pick a month/range yourself after that.
+    private var autoRangeTripId: Int? = null
+
     private val _selectedMonth = MutableStateFlow(MonthKey.current())
     val selectedMonth: StateFlow<MonthKey> = _selectedMonth
 
@@ -218,6 +223,22 @@ class InsightsViewModel(application: Application) : AndroidViewModel(application
                     .sortedWith(compareByDescending<MonthKey> { it.year }.thenByDescending { it.month })
 
             val nowMonth = MonthKey.current()
+            if (tripId != null && autoRangeTripId != tripId) {
+                val trip = db.tripDao().getById(tripId)
+                val times = allExpenses.mapNotNull { it.expense.timestampMillis }
+                val now = System.currentTimeMillis()
+                val start = listOfNotNull(trip?.rangeStart, times.minOrNull()).minOrNull() ?: now
+                val end = listOfNotNull(trip?.rangeEnd ?: now, times.maxOrNull()).maxOrNull() ?: now
+                autoRangeTripId = tripId
+                followCurrentMonth = false
+                _customRange.value = DayRange.of(start, end)
+            } else if (tripId == null && autoRangeTripId != null) {
+                // Back to Main: back to the current month.
+                autoRangeTripId = null
+                followCurrentMonth = true
+                _customRange.value = null
+                _selectedMonth.value = nowMonth
+            }
             if (followCurrentMonth && _customRange.value == null && _selectedMonth.value != nowMonth) {
                 _selectedMonth.value = nowMonth
             }

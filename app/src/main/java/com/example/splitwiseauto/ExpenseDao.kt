@@ -69,6 +69,29 @@ interface ExpenseDao {
 
     // ---- Trip deletion ----
 
+    /** Total + count per trip (Manage trips list). */
+    @Query("SELECT tripId AS tripId, SUM(amount) AS total, COUNT(*) AS count FROM expenses WHERE tripId IS NOT NULL GROUP BY tripId")
+    suspend fun tripTotals(): List<TripTotal>
+
+    /** Move one expense in/out of a trip (null = Main). */
+    @Query("UPDATE expenses SET tripId = :tripId WHERE id = :id")
+    suspend fun setTrip(id: Int, tripId: Int?)
+
+    /** Time of the trip's latest expense (null = none). */
+    @Query("SELECT MAX(timestampMillis) FROM expenses WHERE tripId = :tripId")
+    suspend fun lastTripExpenseTime(tripId: Int): Long?
+
+    @Query("SELECT COUNT(*) FROM expenses WHERE tripId = :tripId AND timestampMillis > :after")
+    suspend fun countTripExpensesAfter(tripId: Int, after: Long): Int
+
+    /** Closing a trip on an earlier date: later expenses go back to Main. */
+    @Query("UPDATE expenses SET tripId = NULL WHERE tripId = :tripId AND timestampMillis > :after")
+    suspend fun moveTripExpensesAfterToMain(tripId: Int, after: Long)
+
+    /** Main (no trip) expenses after a time — shows the user has moved on. */
+    @Query("SELECT COUNT(*) FROM expenses WHERE tripId IS NULL AND timestampMillis > :after")
+    suspend fun countMainExpensesAfter(after: Long): Int
+
     @Query("SELECT COUNT(*) FROM expenses WHERE tripId = :tripId")
     suspend fun countForTrip(tripId: Int): Int
 
@@ -105,3 +128,6 @@ interface ExpenseDao {
     @Query("SELECT * FROM expenses ORDER BY id DESC")
     fun observeAllExpensesWithParticipants(): Flow<List<ExpenseWithParticipants>>
 }
+
+/** Row of [ExpenseDao.tripTotals]. */
+data class TripTotal(val tripId: Int, val total: Double, val count: Int)

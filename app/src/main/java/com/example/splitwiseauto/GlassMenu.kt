@@ -117,16 +117,18 @@ fun GlassMenu(
             onDismissRequest = onDismissRequest,
             properties = PopupProperties(focusable = true)
         ) {
+          // Popups get the phone's own light/dark; re-apply the app setting.
+          ProvideNightMode {
             AnimatedVisibility(
                 visibleState = state,
-                // Dropdown: 200 ms strong ease-out from 0.95 out of the chip;
+                // Dropdown: 220 ms ease-out, grows from 0.88 and drops a little out of the chip;
                 // exit is quicker (140 ms) than entry. No bounce.
                 enter = if (calm) fadeIn(tween(120)) else
-                    fadeIn(tween(200, easing = MotionEaseOut)) + scaleIn(
-                        animationSpec = tween(200, easing = MotionEaseOut),
-                        initialScale = 0.95f,
+                    fadeIn(tween(220, easing = MotionEaseOut)) + scaleIn(
+                        animationSpec = tween(220, easing = MotionEaseOut),
+                        initialScale = 0.88f,
                         transformOrigin = origin
-                    ),
+                    ) + androidx.compose.animation.slideInVertically(tween(220, easing = MotionEaseOut)) { -it / 12 },
                 exit = if (calm) fadeOut(tween(100)) else
                     fadeOut(tween(140, easing = MotionEaseOut)) + scaleOut(
                         animationSpec = tween(140, easing = MotionEaseOut),
@@ -146,8 +148,12 @@ fun GlassMenu(
                         .clip(shape)
                         .background(
                             Brush.verticalGradient(
-                                if (dark) listOf(Color(0xFA222B27), Color(0xFA161D1A))
-                                else listOf(Color(0xFCFFFFFF), Color(0xFCF3F7F5))
+                                when {
+                                    // Material You: plain menu surface.
+                                    AppThemeStore.isMaterial -> androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant.let { listOf(it, it) }
+                                    dark -> listOf(Color(0xFA222B27), Color(0xFA161D1A))
+                                    else -> listOf(Color(0xFCFFFFFF), Color(0xFCF3F7F5))
+                                }
                             )
                         )
                         .border(
@@ -165,6 +171,7 @@ fun GlassMenu(
                     content = content
                 )
             }
+          }
         }
     }
 }

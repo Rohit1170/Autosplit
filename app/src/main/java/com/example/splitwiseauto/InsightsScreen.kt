@@ -269,7 +269,7 @@ private fun MonthSelector(
             minWidth = 210.dp
         ) {
             GlassMenuHeader("Months")
-            val accent = if (isSystemInDarkTheme()) Color(0xFF2FD39A) else Color(0xFF14A87C)
+            val accent = Brand.accent()
             availableMonths.forEach { month ->
                 GlassMenuItem(
                     label = month.displayLabel(),

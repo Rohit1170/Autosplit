@@ -47,7 +47,12 @@ data class Transaction(
     val confidence: ParseConfidence = ParseConfidence.MEDIUM,
     val latitude: Double? = null,
     val longitude: Double? = null,
-    val receivedAtMillis: Long = System.currentTimeMillis()
+    val receivedAtMillis: Long = System.currentTimeMillis(),
+    // Foreign-currency spend ("PHP 518.09"): amount above is then INR —
+    // exact when the bank gave it (or FxMemory found it), else an estimate.
+    val originalAmount: Double? = null,
+    val originalCurrency: String? = null,
+    val fxEstimated: Boolean = false
 )
 
 enum class ParseConfidence { HIGH, MEDIUM, LOW }
@@ -114,16 +119,16 @@ class MainActivity : ComponentActivity() {
                 !smsGranted -> {
                     Toast.makeText(
                         this,
-                        "SMS permission denied",
-                        Toast.LENGTH_SHORT
+                        "SMS is off. Turn it on in Settings → App permissions",
+                        Toast.LENGTH_LONG
                     ).show()
                 }
 
                 !notificationGranted -> {
                     Toast.makeText(
                         this,
-                        "Notification permission denied",
-                        Toast.LENGTH_SHORT
+                        "Notifications are off. Turn them on in Settings → App permissions",
+                        Toast.LENGTH_LONG
                     ).show()
                 }
             }
@@ -145,7 +150,7 @@ class MainActivity : ComponentActivity() {
             if (!granted) {
                 Toast.makeText(
                     this,
-                    "Background location denied — SMS-detected expenses won't have a location",
+                    "SMS expenses won't get a place. Allow \"Location all the time\" in Settings → App permissions",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -184,6 +189,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // First launch: the intro (name, UPI ID) runs before anything else,
+        // including the permission prompts.
+        if (!IntroStore.isDone(this)) {
+            startActivity(android.content.Intent(this, IntroActivity::class.java))
+            finish()
+            return
+        }
         DisplayRefresh.requestHighest(this) // 90/120 Hz where the screen supports it
         CustomCategories.ensureLoaded(this)
 
@@ -208,6 +220,8 @@ class MainActivity : ComponentActivity() {
         // Also run one pass now, so a payment that went stale while the app
         // wasn't running is shown correctly straight away.
         PendingPaymentTimeoutWorker.schedule(this)
+        // Trips: remind to close (or auto-close) trips that stopped being used.
+        TripReminders.schedule(this)
         lifecycleScope.launch {
             PendingPaymentTimeoutWorker.markTimedOut(this@MainActivity)
         }
@@ -215,7 +229,7 @@ class MainActivity : ComponentActivity() {
         readRequestedTab(intent)
 
         setContent {
-            SplitWiseAutoTheme {
+            SplitleeTheme {
                 HomeScreen(
                     requestedTab = requestedTab,
                     onRequestedTabShown = { requestedTab = null }
@@ -462,17 +476,26 @@ fun parseBankSms(
     ).containsMatchIn(message)
     if (!debit && !credit) return null
 
+    // Amounts inside "Avl Bal / Avl Limit / Balance ..." are never the spend.
+    fun firstSpendAmount(re: Regex): String? =
+        re.findAll(message).firstOrNull { !isBalanceContext(message, it.range.first) }
+            ?.groupValues?.getOrNull(1)
+    // Foreign-currency spend ("PHP 518.09 spent using ... Card").
+    val foreign = ForeignCurrency.find(message)
     val amountText =
-        Regex("""(?:rs\.?|inr|₹)\s*:?\s*([\d,]+(?:\.\d{1,2})?)""", RegexOption.IGNORE_CASE)
-            .find(message)?.groupValues?.getOrNull(1)
-            ?: Regex("""\b([\d,]+(?:\.\d{1,2})?)\s*(?:rs\.?|inr|₹)\b""", RegexOption.IGNORE_CASE)
-                .find(message)?.groupValues?.getOrNull(1)
+        firstSpendAmount(Regex("""(?:rs\.?|inr|₹)\s*:?\s*([\d,]+(?:\.\d{1,2})?)""", RegexOption.IGNORE_CASE))
+            ?: firstSpendAmount(Regex("""\b([\d,]+(?:\.\d{1,2})?)\s*(?:rs\.?|inr|₹)\b""", RegexOption.IGNORE_CASE))
             // No currency marker at all, e.g. SBI UPI: "A/C X8888 debited by
             // 480.0 on date 28Sep26 trf to NAME Refno ...". Only a number
             // directly after "debited/credited by|with|for" counts.
             ?: Regex("""\b(?:debited|credited)\s+(?:by|with|for)\s+([\d,]+(?:\.\d{1,2})?)\b""", RegexOption.IGNORE_CASE)
                 .find(message)?.groupValues?.getOrNull(1)
-    val parsedAmount = amountText?.replace(",", "")?.toDoubleOrNull() ?: return null
+    val inrAmount = amountText?.replace(",", "")?.toDoubleOrNull()
+    // A foreign spend with no INR figure: estimate (marked; FxMemory refines it).
+    val fxEstimated = foreign != null && inrAmount == null
+    val parsedAmount = inrAmount
+        ?: foreign?.let { ForeignCurrency.estimateInr(it) }
+        ?: return null
     if (parsedAmount <= 0.0) return null
 
     val accountIdentifier = extractAccountIdentifier(message)
@@ -508,7 +531,10 @@ fun parseBankSms(
         upi = reference,
         accountIdentifier = accountIdentifier,
         confidence = confidence,
-        receivedAtMillis = receivedAtMillis
+        receivedAtMillis = receivedAtMillis,
+        originalAmount = foreign?.amount,
+        originalCurrency = foreign?.currency,
+        fxEstimated = fxEstimated
     )
 }
 
@@ -568,7 +594,12 @@ fun extractAccountIdentifier(sms: String): String? {
         """(?:a/?c(?:count)?|acct|card)(?:\s+(?:no\.?|number))?\s+(?:ending(?:\s+(?:in|with))?\s+)?(?:no\.?\s*)?(?:x+|\*+)?\s*(\d{3,4})\b""",
         RegexOption.IGNORE_CASE
     ).find(sms)?.groupValues?.getOrNull(1)
-    val maskedEnding = labelledEnding ?: Regex("""\b(?:x{2,}|\*{2,})(\d{3,4})\b""", RegexOption.IGNORE_CASE)
+    // "A/CX0508" / "A/C*1234": mask glued to A/C with no space (SBI UPI
+    // alerts). Without this the number was lost and the debit landed on
+    // the Slice (no account number) card.
+    val attachedEnding = labelledEnding ?: Regex("""\b(?:a/c|acct)\s*[x*]+(\d{3,4})\b""", RegexOption.IGNORE_CASE)
+        .find(sms)?.groupValues?.getOrNull(1)
+    val maskedEnding = attachedEnding ?: Regex("""\b(?:x{2,}|\*{2,})(\d{3,4})\b""", RegexOption.IGNORE_CASE)
         .find(sms)?.groupValues?.getOrNull(1)
     return maskedEnding?.let { "****${it.padStart(4, '0')}" }
 }

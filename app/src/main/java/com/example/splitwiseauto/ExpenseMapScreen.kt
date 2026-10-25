@@ -2,72 +2,102 @@ package com.example.splitwiseauto
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Place
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.NearMe
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Whatshot
+import androidx.compose.material.icons.filled.ZoomOutMap
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.ui.unit.sp
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.Dot
+import com.google.android.gms.maps.model.Gap
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.MapStyleOptions
+import com.google.maps.android.compose.Circle
 import com.google.maps.android.compose.GoogleMap
 import com.google.maps.android.compose.MapProperties
+import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.Marker
 import com.google.maps.android.compose.MarkerState
+import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Calendar
 import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -76,17 +106,35 @@ import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+/** Period filter for Main (a trip always shows the whole trip). */
+private enum class MapPeriod(val label: String) { MONTH("This month"), ALL("All time") }
+
+private const val DAY_MS = 86_400_000L
+
+/**
+ * Map tab: category pins, mint group bubbles, glass controls, a sheet with
+ * the total for the visible area, a tap card, trip route + day filters,
+ * search over your own expenses and a spending heatmap. Everything here is
+ * read-only; no data is changed.
+ */
 @Composable
 fun ExpenseMapScreen(
     expenses: List<Expense>,
     active: Boolean = true,
     loaded: Boolean = true,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // Trip mode: open on the trip's latest expense, not your current location.
+    tripId: Int? = null,
+    // Height of the floating tab bar: the map runs underneath it, overlays sit above it.
+    bottomInset: Dp = 0.dp,
+    // False while [expenses] still belong to the previous mode (Main vs a trip):
+    // the camera waits for the new mode's data before moving.
+    dataReady: Boolean = true
 ) {
     // Fresh install / no located expenses: show an empty state instead of
     // spinning up Google Maps, the location prompt and marker/bounds code.
     if (!loaded) {
-        LoadingStateView(modifier)
+        LoadingStateView(modifier.padding(bottom = bottomInset))
         return
     }
     if (expenses.isEmpty()) {
@@ -94,18 +142,13 @@ fun ExpenseMapScreen(
             icon = Icons.Filled.Place,
             title = "No expenses on the map yet",
             message = "Expenses saved with a location will appear here as pins.",
-            modifier = modifier
+            modifier = modifier.padding(bottom = bottomInset)
         )
         return
     }
 
     // Lazily create the Google Map only after the Map tab has actually been
-    // opened at least once. The HorizontalPager pre-composes adjacent pages,
-    // and MapView.onCreate blocks the main thread (~100ms+, plus heavy GC and
-    // GMS calls) — doing that eagerly at app startup / during a swipe was a
-    // major source of the jank seen in the logs. Until the tab is opened we
-    // render a cheap placeholder, so Home and Insights stay smooth. Once
-    // opened, the flag stays true so the map isn't torn down on tab switches.
+    // opened once (MapView.onCreate is heavy; the pager pre-composes pages).
     var mapActivated by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(active) { if (active) mapActivated = true }
     if (!mapActivated) {
@@ -114,28 +157,68 @@ fun ExpenseMapScreen(
     }
 
     val context = LocalContext.current
+    val view = LocalView.current
+    val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
     val coroutineScope = rememberCoroutineScope()
+    val dark = isSystemInDarkTheme()
+    val accent = Brand.accent()
+
+    // ---- filters ----------------------------------------------------------
+    var period by rememberSaveable { mutableStateOf(MapPeriod.MONTH) }
+    var categoryFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var heatmap by rememberSaveable { mutableStateOf(false) }
+    var dayFilter by remember(tripId) { mutableStateOf<Int?>(null) }
+
+    var trip by remember(tripId) { mutableStateOf<Trip?>(null) }
+    LaunchedEffect(tripId) {
+        trip = tripId?.let { AppDatabase.getDatabase(context).tripDao().getById(it) }
+    }
+    val tripStart = remember(trip) { trip?.let { startOfDay(it.rangeStart) } }
+    fun dayOf(e: Expense): Int? {
+        val start = tripStart ?: return null
+        val ts = e.timestampMillis ?: return null
+        return ((ts - start) / DAY_MS).toInt().coerceAtLeast(0) + 1
+    }
+
+    val monthStart = remember { startOfMonth(System.currentTimeMillis()) }
+    val located = remember(expenses) { expenses.filter { it.latitude != null && it.longitude != null } }
+
+    // Categories present (for chips), most used first.
+    val categoryChips = remember(located) {
+        located.groupBy { categoryByName(it.category).name }
+            .entries.sortedByDescending { it.value.size }
+            .map { it.key }
+            .take(6)
+    }
+    val tripDays = remember(located, tripStart) {
+        if (tripStart == null) emptyList() else located.mapNotNull { dayOf(it) }.distinct().sorted()
+    }
+
+    val filtered = remember(located, period, categoryFilter, query, dayFilter, tripId, tripStart) {
+        located.asSequence()
+            .filter { tripId != null || period == MapPeriod.ALL || (it.timestampMillis ?: 0L) >= monthStart }
+            .filter { categoryFilter == null || categoryByName(it.category).name == categoryFilter }
+            .filter { query.isBlank() || it.merchant.contains(query.trim(), ignoreCase = true) }
+            .filter { dayFilter == null || dayOf(it) == dayFilter }
+            .toList()
+    }
+
+    // ---- selection --------------------------------------------------------
     var selectedExpense by remember { mutableStateOf<Expense?>(null) }
     var selectedCluster by remember { mutableStateOf<List<Expense>?>(null) }
-    val markerPositions = remember(expenses) {
-        expenses.mapNotNull { expense ->
-            expense.latitude?.let { latitude ->
-                expense.longitude?.let { longitude -> LatLng(latitude, longitude) }
-            }
-        }
-    }
+    var sheetExpanded by rememberSaveable { mutableStateOf(false) }
+
+    // ---- location / camera (unchanged behaviour) ---------------------------
     val savedFallback = remember { LocationHelper.getLastKnownLocation(context) }
     var currentLocation by remember { mutableStateOf<LocationSnapshot?>(null) }
-    var locationStatus by remember { mutableStateOf("Finding your location…") }
     var isResolvingLocation by remember { mutableStateOf(true) }
     var mapLoaded by remember { mutableStateOf(false) }
     var initialCameraApplied by remember { mutableStateOf(false) }
-    var hasLocationPermission by remember {
-        mutableStateOf(LocationHelper.hasLocationPermission(context))
-    }
+    var hasLocationPermission by remember { mutableStateOf(LocationHelper.hasLocationPermission(context)) }
+    val markerPositions = remember(located) { located.map { LatLng(it.latitude!!, it.longitude!!) } }
 
-    var nearbyExpanded by remember { mutableStateOf(false) }
-    val darkTheme = isSystemInDarkTheme()
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(
             savedFallback?.let { LatLng(it.latitude, it.longitude) } ?: LatLng(20.5937, 78.9629),
@@ -149,80 +232,130 @@ fun ExpenseMapScreen(
             permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
             LocationHelper.hasLocationPermission(context)
     }
-
-    // Opening the Map is an explicit user action, so request location once here
-    // instead of making the user find the locate button first.
     LaunchedEffect(Unit) {
         if (!hasLocationPermission) {
             permissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
             )
         }
     }
 
-    LaunchedEffect(mapLoaded, hasLocationPermission, markerPositions) {
-        if (!mapLoaded || initialCameraApplied) return@LaunchedEffect
+    var cameraTripId by remember { mutableStateOf(tripId) }
+    // Switching mode (Main <-> a trip, or another trip) re-centres the map:
+    // a trip goes to its latest expense, Main goes to where you are now.
+    LaunchedEffect(tripId) {
+        if (tripId != cameraTripId) {
+            cameraTripId = tripId
+            selectedExpense = null
+            selectedCluster = null
+            initialCameraApplied = false
+            isResolvingLocation = true
+        }
+    }
 
-        try {
-        // withTimeoutOrNull is a safety net: whatever happens inside (a Play Services
-        // Task that never resolves, an unexpected suspend point, etc.) this can never
-        // leave the "Finding your location…" overlay stuck on screen indefinitely.
-        // The surrounding try/finally is a second safety net: even a real thrown
-        // exception (not just a timeout) can never skip clearing the overlay below.
-        withTimeoutOrNull(10_000) {
-            if (hasLocationPermission) {
-                locationStatus = "Finding your location…"
-                repeat(2) { attempt ->
-                    currentLocation = LocationHelper.getCurrentLocation(context)
-                    if (currentLocation != null) return@repeat
-                    if (attempt < 1) delay(750)
-                }
-                currentLocation?.let {
-                    LocationHelper.saveLastKnownLocation(context, it)
+    LaunchedEffect(mapLoaded, hasLocationPermission, markerPositions, tripId, initialCameraApplied, dataReady) {
+        if (!mapLoaded || initialCameraApplied || !dataReady) return@LaunchedEffect
+        if (tripId != null) {
+            val latest = located.maxByOrNull { it.timestampMillis ?: 0L }
+            if (latest != null) {
+                try {
                     cameraPositionState.animate(
-                        CameraUpdateFactory.newLatLngZoom(
-                            LatLng(it.latitude, it.longitude),
-                            16f
-                        )
+                        CameraUpdateFactory.newLatLngZoom(LatLng(latest.latitude!!, latest.longitude!!), 14f)
                     )
-                    locationStatus = "Showing your current location"
+                } finally {
+                    initialCameraApplied = true
+                    isResolvingLocation = false
                 }
-            }
-
-            if (currentLocation == null && markerPositions.isNotEmpty()) {
-                val boundsBuilder = LatLngBounds.Builder()
-                markerPositions.forEach(boundsBuilder::include)
-                cameraPositionState.animate(
-                    CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 96)
-                )
-                locationStatus = "Showing saved expense locations"
-            } else if (currentLocation == null && savedFallback != null) {
-                cameraPositionState.animate(
-                    CameraUpdateFactory.newLatLngZoom(
-                        LatLng(savedFallback.latitude, savedFallback.longitude),
-                        15f
-                    )
-                )
-                locationStatus = "Showing your last known location"
-            } else if (currentLocation == null) {
-                cameraPositionState.animate(
-                    CameraUpdateFactory.newLatLngZoom(LatLng(20.5937, 78.9629), 5.0f)
-                )
-                locationStatus = "No location available yet"
-            } else {
-                locationStatus = "Showing your current location"
+                return@LaunchedEffect
             }
         }
-
+        try {
+            withTimeoutOrNull(10_000) {
+                if (hasLocationPermission) {
+                    repeat(2) { attempt ->
+                        currentLocation = LocationHelper.getCurrentLocation(context)
+                        if (currentLocation != null) return@repeat
+                        if (attempt < 1) delay(750)
+                    }
+                    currentLocation?.let {
+                        LocationHelper.saveLastKnownLocation(context, it)
+                        cameraPositionState.animate(
+                            CameraUpdateFactory.newLatLngZoom(LatLng(it.latitude, it.longitude), 15f)
+                        )
+                    }
+                }
+                if (currentLocation == null && markerPositions.isNotEmpty()) {
+                    val b = LatLngBounds.Builder()
+                    markerPositions.forEach(b::include)
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngBounds(b.build(), 96))
+                } else if (currentLocation == null && savedFallback != null) {
+                    cameraPositionState.animate(
+                        CameraUpdateFactory.newLatLngZoom(LatLng(savedFallback.latitude, savedFallback.longitude), 15f)
+                    )
+                }
+            }
         } finally {
-            // Unconditional: guarantees the overlay always dismisses, even if the block
-            // above timed out or threw before setting a final locationStatus.
             initialCameraApplied = true
             isResolvingLocation = false
         }
+    }
+
+    fun fitTo(list: List<Expense>) {
+        val pts = list.map { LatLng(it.latitude!!, it.longitude!!) }
+        if (pts.isEmpty()) return
+        coroutineScope.launch {
+            runCatching {
+                if (pts.size == 1) cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(pts.first(), 15f))
+                else {
+                    val b = LatLngBounds.Builder(); pts.forEach(b::include)
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngBounds(b.build(), 140))
+                }
+            }
+        }
+    }
+    fun fitAll() = fitTo(filtered)
+
+    // Day chip: filter AND fly to that day's expenses.
+    fun selectDay(d: Int?) {
+        dayFilter = d
+        selectedExpense = null
+        fitTo(located.filter { (d == null || dayOf(it) == d) &&
+            (categoryFilter == null || categoryByName(it.category).name == categoryFilter) })
+    }
+
+    fun goToMyLocation() {
+        if (!hasLocationPermission) {
+            permissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            )
+            return
+        }
+        coroutineScope.launch {
+            val loc = LocationHelper.getCurrentLocation(context) ?: return@launch
+            currentLocation = loc
+            LocationHelper.saveLastKnownLocation(context, loc)
+            runCatching {
+                cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 15f))
+            }
+        }
+    }
+
+    // Visible area (updated when the camera stops moving).
+    var visibleBounds by remember { mutableStateOf<LatLngBounds?>(null) }
+    LaunchedEffect(cameraPositionState.isMoving, mapLoaded) {
+        if (mapLoaded && !cameraPositionState.isMoving) {
+            visibleBounds = cameraPositionState.projection?.visibleRegion?.latLngBounds
+        }
+    }
+    val inArea = remember(filtered, visibleBounds) {
+        val b = visibleBounds
+        if (b == null) filtered else filtered.filter { b.contains(LatLng(it.latitude!!, it.longitude!!)) }
+    }
+    val referencePoint = currentLocation ?: savedFallback
+
+
+    val mapStyle = remember(dark) {
+        runCatching { MapStyleOptions(if (dark) DARK_MAP_STYLE_JSON else LIGHT_MAP_STYLE_JSON) }.getOrNull()
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -231,339 +364,908 @@ fun ExpenseMapScreen(
             cameraPositionState = cameraPositionState,
             properties = MapProperties(
                 isMyLocationEnabled = hasLocationPermission && LocationHelper.hasLocationPermission(context),
-                // Full-bleed dark map to match the rest of the redesign —
-                // only applied in system dark mode, so light mode keeps the
-                // standard map instead of forcing dark on everyone.
-                mapStyleOptions = if (darkTheme) MapStyleOptions(DARK_MAP_STYLE_JSON) else null
+                mapStyleOptions = mapStyle
             ),
-            // The bell/Main row is a real header above the pager now, not an
-            // overlay on the map, so the map's own controls (my-location
-            // button) only need the same small top gap as every other tab.
-            contentPadding = PaddingValues(top = TAB_CONTENT_TOP_GAP),
+            uiSettings = MapUiSettings(
+                compassEnabled = false,
+                mapToolbarEnabled = false,
+                myLocationButtonEnabled = false,
+                zoomControlsEnabled = false,
+                indoorLevelPickerEnabled = false
+            ),
+            contentPadding = PaddingValues(
+                top = TAB_CONTENT_TOP_GAP + if (tripId == null) 60.dp else 0.dp,
+                bottom = bottomInset + 96.dp
+            ),
             onMapLoaded = { mapLoaded = true },
-            onMyLocationButtonClick = {
-                // NOTE: onMyLocationClick below only fires if the user taps the blue
-                // location dot on the map, not automatically once this button finishes
-                // centering — so this callback must NOT turn our overlay on, since
-                // nothing would reliably turn it back off again. The native button
-                // already shows its own built-in loading feedback for this action.
-                false // let the map SDK perform its own default camera move
-            },
-            onMyLocationClick = {
-                val snapshot = LocationSnapshot(it.latitude, it.longitude)
-                currentLocation = snapshot
-                LocationHelper.saveLastKnownLocation(context, snapshot)
-                locationStatus = "Showing your current location"
-                initialCameraApplied = true
-                isResolvingLocation = false
+            onMapClick = {
+                focusManager.clearFocus()
+                selectedExpense = null
             }
         ) {
-            // Reading zoom here makes this block recompose as the user pinches/zooms,
-            // so clusters merge and split live instead of only on the next full redraw.
             val zoom = cameraPositionState.position.zoom
-            val clusters = remember(expenses, zoom) { clusterExpenses(expenses, zoom) }
 
-            clusters.forEach { cluster ->
-                if (cluster.expenses.size == 1) {
-                    val expense = cluster.expenses.first()
-                    val category = categorize(expense.merchant)
-                    Marker(
-                        state = MarkerState(position = cluster.center),
-                        title = expense.merchant,
-                        snippet = "${formatRupeeIndian(expense.amount)} • ${expense.date}",
-                        icon = rememberPillMarkerIcon(
-                            text = formatRupeeIndian(expense.amount),
-                            color = category.fgColor
-                        ),
-                        onClick = {
-                            selectedExpense = expense
-                            false
-                        }
+            // Trip route: the trip's expenses joined in date order.
+            if (tripId != null && !heatmap) {
+                val route = remember(filtered) {
+                    filtered.filter { it.timestampMillis != null }
+                        .sortedBy { it.timestampMillis }
+                        .map { LatLng(it.latitude!!, it.longitude!!) }
+                }
+                if (route.size >= 2) {
+                    Polyline(
+                        points = route,
+                        color = accent.copy(alpha = 0.6f),
+                        width = 6f,
+                        pattern = listOf(Dot(), Gap(14f))
                     )
-                } else {
-                    // Mixed-category clusters use the color of whichever
-                    // category is most common in the group, and show the
-                    // count rather than a summed amount (a sum across
-                    // different categories/dates reads as misleading).
-                    val dominantCategory = cluster.expenses
-                        .groupBy { categorize(it.merchant) }
-                        .maxByOrNull { it.value.size }
-                        ?.key ?: OTHER
-                    Marker(
-                        state = MarkerState(position = cluster.center),
-                        title = "${cluster.expenses.size} expenses",
-                        snippet = "Tap to see them",
-                        icon = rememberPillMarkerIcon(
-                            text = "×${cluster.expenses.size}",
-                            color = dominantCategory.fgColor
-                        ),
-                        onClick = {
-                            // Repeat visits to the same place (e.g. a daily breakfast
-                            // spot) have near-identical coordinates and will keep
-                            // clustering together no matter how far you zoom in, so
-                            // zooming can never split them apart. Show a picker of
-                            // the individual expenses instead.
-                            selectedCluster = cluster.expenses
-                            true // consumed: we show our own picker instead of the default info window
-                        }
-                    )
+                }
+            }
+
+            if (heatmap) {
+                val spots = remember(filtered) { heatSpots(filtered) }
+                val max = spots.maxOfOrNull { it.second } ?: 1.0
+                spots.forEach { (center, total) ->
+                    val r = 120.0 + 900.0 * sqrt(total / max)
+                    Circle(center = center, radius = r, fillColor = Color(0xFFFF5C5C).copy(alpha = 0.10f), strokeWidth = 0f, strokeColor = Color.Transparent)
+                    Circle(center = center, radius = r * 0.6, fillColor = Color(0xFFFFA23C).copy(alpha = 0.18f), strokeWidth = 0f, strokeColor = Color.Transparent)
+                    Circle(center = center, radius = r * 0.3, fillColor = Color(0xFFFF5C5C).copy(alpha = 0.32f), strokeWidth = 0f, strokeColor = Color.Transparent)
+                }
+            } else {
+                val clusters = remember(filtered, zoom) { clusterExpenses(filtered, zoom) }
+                clusters.forEach { cluster ->
+                    if (cluster.expenses.size == 1) {
+                        val expense = cluster.expenses.first()
+                        val category = categoryByName(expense.category)
+                        val isSelected = selectedExpense?.id == expense.id
+                        Marker(
+                            state = MarkerState(position = cluster.center),
+                            icon = if (isSelected) rememberExpensePin(
+                                emoji = categoryEmoji(category.name),
+                                text = formatRupeeIndian(expense.amount),
+                                color = category.fgColor,
+                                selected = true,
+                                dark = dark
+                            ) else rememberDotPin(categoryEmoji(category.name), category.fgColor, dark),
+                            anchor = if (isSelected) Offset(0.5f, 1f) else Offset(0.5f, 0.5f),
+                            alpha = if (selectedExpense == null || isSelected) 1f else 0.45f,
+                            zIndex = if (isSelected) 2f else 0f,
+                            onClick = {
+                                Haptics.tap(view)
+                                selectedExpense = expense
+                                true
+                            }
+                        )
+                    } else {
+                        Marker(
+                            state = MarkerState(position = cluster.center),
+                            icon = rememberClusterIcon(cluster.expenses.size, accent),
+                            anchor = Offset(0.5f, 0.5f),
+                            alpha = if (selectedExpense == null) 1f else 0.45f,
+                            zIndex = 1f,
+                            onClick = {
+                                Haptics.tap(view)
+                                selectedExpense = null
+                                // Same spot visited again and again won't split by zooming,
+                                // so close in: list them; otherwise zoom into the group.
+                                val spread = cluster.expenses.map { LatLng(it.latitude!!, it.longitude!!) }
+                                val b = LatLngBounds.Builder(); spread.forEach(b::include)
+                                val bounds = b.build()
+                                val tight = haversineKm(
+                                    bounds.southwest.latitude, bounds.southwest.longitude,
+                                    bounds.northeast.latitude, bounds.northeast.longitude
+                                ) < 0.05
+                                if (tight || zoom >= 17f) {
+                                    selectedCluster = cluster.expenses
+                                } else {
+                                    coroutineScope.launch {
+                                        runCatching { cameraPositionState.animate(CameraUpdateFactory.newLatLngBounds(bounds, 140)) }
+                                    }
+                                }
+                                true
+                            }
+                        )
+                    }
                 }
             }
         }
 
-        when {
-            isResolvingLocation -> {
-                Column(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    CircularProgressIndicator()
-                    Text(
-                        text = "Finding your location…",
-                        modifier = Modifier.padding(top = 12.dp)
-                    )
-                }
-            }
-            currentLocation == null && markerPositions.isEmpty() -> {
-                Column(
-                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("No saved location yet", style = MaterialTheme.typography.titleMedium)
-                    Text("Allow location and add an expense to see it on the map.")
-                }
-            }
-        }
-
-        if (currentLocation == null) {
-            Card(
+        // ---- top: search only (Main). A trip already has its chip in the header row.
+        if (tripId == null) {
+            Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(start = 16.dp, end = 16.dp, top = TAB_CONTENT_TOP_GAP, bottom = 16.dp)
+                    .fillMaxWidth()
+                    .padding(top = TAB_CONTENT_TOP_GAP)
+                    .padding(horizontal = 14.dp)
             ) {
-                Text(
-                    text = locationStatus,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    style = MaterialTheme.typography.bodySmall
+                MapSearchBar(
+                    query = query,
+                    onQuery = { query = it; selectedExpense = null },
+                    onDone = { focusManager.clearFocus(); fitAll() }
                 )
             }
         }
 
-        selectedExpense?.let { expense ->
-            Card(
+        // ---- right: two small glass buttons ---------------------------------
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = TAB_CONTENT_TOP_GAP + if (tripId != null) 4.dp else 62.dp, end = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            MapRoundButton(Icons.Filled.MyLocation, "My location") { Haptics.tap(view); goToMyLocation() }
+            MapRoundButton(Icons.Filled.ZoomOutMap, "Show all") { Haptics.tap(view); fitAll() }
+        }
+
+        if (isResolvingLocation) {
+            Row(
                 modifier = Modifier
-                    .align(androidx.compose.ui.Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(16.dp)
+                    .align(Alignment.Center)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(mapGlass())
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(expense.merchant, style = MaterialTheme.typography.titleMedium)
-                    Text("${formatRupeeIndian(expense.amount)} • ${expense.date}")
-                    Text(expense.bank, style = MaterialTheme.typography.bodySmall)
-                }
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = accent)
+                Spacer(Modifier.width(10.dp))
+                Text("Finding your location…", style = MaterialTheme.typography.bodySmall)
             }
         }
 
-        // Bottom sheet listing the nearest expenses to wherever the map's
-        // reference point is (live location if we have it, else the saved
-        // fallback) — this is what makes the map screen a tool for finding
-        // nearby spending, not just a decorative pin display. Hidden while a
-        // single-marker card is showing so the two don't stack.
-        val referencePoint = currentLocation ?: savedFallback
-        if (selectedExpense == null && referencePoint != null) {
-            val nearby = remember(expenses, referencePoint) {
-                expenses
-                    .filter { it.latitude != null && it.longitude != null }
-                    .map { expense ->
-                        expense to haversineKm(
-                            referencePoint.latitude, referencePoint.longitude,
-                            expense.latitude!!, expense.longitude!!
-                        )
-                    }
-                    .sortedBy { it.second }
-                    .take(15)
-            }
+        // ---- bottom: tap card, or the sheet (collapsed by default) ----------
+        val bottomModifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, bottom = bottomInset + 10.dp)
 
-            if (nearby.isNotEmpty()) {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth(),
-                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 8.dp
-                ) {
-                    Column {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { nearbyExpanded = !nearbyExpanded }
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Filled.NearMe,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
+        val sel = selectedExpense
+        if (sel != null) {
+            Box(bottomModifier) {
+                MapExpenseCard(
+                    expense = sel,
+                    accent = accent,
+                    onOpen = {
+                        context.startActivity(
+                            Intent(context, ExpenseDetailActivity::class.java).putExtra("expenseId", sel.id)
+                        )
+                    },
+                    onDirections = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://www.google.com/maps/dir/?api=1&destination=${sel.latitude},${sel.longitude}")
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Nearby (${nearby.size})",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Icon(
-                                imageVector = if (nearbyExpanded) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
-                                contentDescription = if (nearbyExpanded) "Collapse" else "Expand"
                             )
                         }
-
-                        if (nearbyExpanded) {
-                            LazyColumn(modifier = Modifier.heightIn(max = 280.dp)) {
-                                items(nearby, key = { it.first.id }) { (expense, distanceKm) ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                context.startActivity(
-                                                    Intent(context, ExpenseDetailActivity::class.java).apply {
-                                                        putExtra("expenseId", expense.id)
-                                                    }
-                                                )
-                                            }
-                                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = expense.merchant,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.Medium,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = formatDistance(distanceKm),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                        Text(
-                                            text = formatRupeeIndian(expense.amount),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
+                    },
+                    onClose = { selectedExpense = null }
+                )
+            }
+        } else {
+            Box(bottomModifier) {
+                MapAreaSheet(
+                    expanded = sheetExpanded,
+                    onExpandedChange = { sheetExpanded = it },
+                    heatmap = heatmap,
+                    onHeatmap = { heatmap = it; selectedExpense = null },
+                    inArea = inArea,
+                    title = when {
+                        tripId != null && dayFilter != null -> "Day $dayFilter"
+                        tripId != null -> listOfNotNull(trip?.name, trip?.dateRangeLabel()).joinToString(" · ").ifEmpty { "This trip" }
+                        else -> period.label
+                    },
+                    referencePoint = referencePoint,
+                    tripDays = if (tripId != null) tripDays else emptyList(),
+                    dayFilter = dayFilter,
+                    onDay = { selectDay(it) },
+                    period = if (tripId == null) period else null,
+                    onPeriod = { period = it; selectedExpense = null },
+                    categoryChips = categoryChips,
+                    categoryFilter = categoryFilter,
+                    onCategory = { categoryFilter = it; selectedExpense = null },
+                    accent = accent,
+                    onPick = { e ->
+                        selectedExpense = e
+                        coroutineScope.launch {
+                            runCatching {
+                                cameraPositionState.animate(
+                                    CameraUpdateFactory.newLatLngZoom(LatLng(e.latitude!!, e.longitude!!), maxOf(cameraPositionState.position.zoom, 15f))
+                                )
                             }
+                        }
+                    }
+                )
+            }
+        }
+
+        selectedCluster?.let { group ->
+            AppSheet(
+                title = "${group.size} expenses here",
+                subtitle = formatRupeeIndian(group.sumOf { it.amount }) + " in total",
+                onDismiss = { selectedCluster = null },
+                glass = true
+            ) {
+                LazyColumn(modifier = Modifier.heightIn(max = 380.dp)) {
+                    items(group.sortedByDescending { it.timestampMillis ?: 0L }, key = { it.id }) { e ->
+                        MapExpenseRow(e, trailingNote = e.date) {
+                            selectedCluster = null
+                            context.startActivity(
+                                Intent(context, ExpenseDetailActivity::class.java).putExtra("expenseId", e.id)
+                            )
                         }
                     }
                 }
             }
         }
+    }
+}
 
-        selectedCluster?.let { clusterExpenses ->
-            AlertDialog(
-                onDismissRequest = { selectedCluster = null },
-                title = { Text("${clusterExpenses.size} expenses here") },
-                text = {
-                    LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
-                        items(clusterExpenses) { expense ->
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        selectedCluster = null
-                                        context.startActivity(
-                                            Intent(context, ExpenseDetailActivity::class.java).apply {
-                                                putExtra("expenseId", expense.id)
-                                            }
-                                        )
-                                    }
-                                    .padding(vertical = 10.dp)
-                            ) {
-                                Text(expense.merchant, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    "${formatRupeeIndian(expense.amount)} • ${expense.date}",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { selectedCluster = null }) {
-                        Text("Close")
-                    }
-                }
+// ---------------------------------------------------------------------------
+// Overlay pieces
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun mapGlass(): Color = when {
+    AppThemeStore.isMaterial -> MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+    isSystemInDarkTheme() -> Color(0xFF12201B).copy(alpha = 0.90f)
+    else -> Color.White.copy(alpha = 0.95f)
+}
+
+@Composable
+private fun mapLine(): Color =
+    if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.09f) else Color.Black.copy(alpha = 0.07f)
+
+@Composable
+private fun MapSearchBar(query: String, onQuery: (String) -> Unit, onDone: () -> Unit) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(mapGlass())
+            .border(1.dp, mapLine(), RoundedCornerShape(24.dp))
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Filled.Search, contentDescription = null, tint = muted, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f)) {
+            if (query.isEmpty()) {
+                Text("Search your expenses by merchant", color = muted, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+            }
+            BasicTextField(
+                value = query,
+                onValueChange = onQuery,
+                singleLine = true,
+                textStyle = TextStyle(color = onSurface, fontSize = 15.sp),
+                cursorBrush = SolidColor(Brand.accent()),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onDone() }),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (query.isNotEmpty()) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Clear",
+                tint = muted,
+                modifier = Modifier.size(20.dp).clip(CircleShape).clickable { onQuery("") }
             )
         }
     }
 }
 
-/** Bitmap "pill" marker icons are cached by (text, color) so pinch-zoom recomposition doesn't redraw the same bitmap every frame. */
-private val pillMarkerCache = mutableMapOf<String, BitmapDescriptor>()
+@Composable
+private fun MapChip(label: String, selected: Boolean, accent: Color, onClick: () -> Unit) {
+    val source = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .pressScale(source, haptic = false)
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (selected) accent else mapGlass())
+            .border(1.dp, if (selected) Color.Transparent else mapLine(), RoundedCornerShape(18.dp))
+            .clickable(interactionSource = source, indication = null, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) Brand.onAccent() else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
 
 @Composable
-private fun rememberPillMarkerIcon(text: String, color: Color): BitmapDescriptor {
-    val argb = color.toArgb()
-    return remember(text, argb) {
-        pillMarkerCache.getOrPut("$text-$argb") { createPillBitmapDescriptor(text, argb) }
+private fun MapRoundButton(
+    icon: ImageVector,
+    description: String,
+    active: Boolean = false,
+    accent: Color = Brand.accent(),
+    onClick: () -> Unit
+) {
+    val source = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .pressScale(source, haptic = false)
+            .clip(CircleShape)
+            .background(if (active) accent else mapGlass())
+            .border(1.dp, if (active) Color.Transparent else mapLine(), CircleShape)
+            .clickable(interactionSource = source, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = description,
+            tint = if (active) Brand.onAccent() else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(18.dp)
+        )
     }
 }
 
-private fun createPillBitmapDescriptor(text: String, backgroundArgb: Int): BitmapDescriptor {
-    val density = 3f // fixed density-independent scale; markers don't need to track the device's actual density
-    val textSizePx = 13f * density
-    val paddingHPx = 10f * density
-    val heightPx = 26f * density
+@Composable
+private fun TripMapHeader(trip: Trip?, total: Double, count: Int, accent: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(mapGlass())
+            .border(1.dp, mapLine(), RoundedCornerShape(22.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "TRIP",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                listOfNotNull(trip?.name, trip?.dateRangeLabel()).joinToString(" · "),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(formatRupeeIndian(total), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = accent)
+            Text(
+                "$count on map",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
 
-    val textPaint = android.graphics.Paint().apply {
-        isAntiAlias = true
+@Composable
+private fun MapAreaSheet(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    heatmap: Boolean,
+    onHeatmap: (Boolean) -> Unit,
+    inArea: List<Expense>,
+    title: String,
+    referencePoint: LocationSnapshot?,
+    tripDays: List<Int>,
+    dayFilter: Int?,
+    onDay: (Int?) -> Unit,
+    period: MapPeriod?,
+    onPeriod: (MapPeriod) -> Unit,
+    categoryChips: List<String>,
+    categoryFilter: String?,
+    onCategory: (String?) -> Unit,
+    accent: Color,
+    onPick: (Expense) -> Unit
+) {
+    val view = LocalView.current
+    val shape = RoundedCornerShape(24.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(mapGlass())
+            .border(1.dp, mapLine(), shape)
+            // Drag up to open, down to close; a tap toggles.
+            .pointerInput(expanded) {
+                var total = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { total = 0f },
+                    onDragEnd = {
+                        if (total < -40f && !expanded) { Haptics.tap(view); onExpandedChange(true) }
+                        if (total > 40f && expanded) { Haptics.tap(view); onExpandedChange(false) }
+                    }
+                ) { _, dy -> total += dy }
+            }
+            .padding(horizontal = 18.dp)
+            .padding(top = 8.dp, bottom = 14.dp)
+    ) {
+        // Grab handle.
+        Box(Modifier.fillMaxWidth().padding(bottom = 6.dp), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier
+                    .size(width = 36.dp, height = 4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f))
+            )
+        }
+
+        // Peek line: what's in view + total. Tap to open / close.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                    Haptics.tap(view); onExpandedChange(!expanded)
+                },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "$title · ${inArea.size} in view",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    formatRupeeIndian(inArea.sumOf { it.amount }),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Icon(
+                if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp,
+                contentDescription = if (expanded) "Close" else "Open",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (expanded) {
+        Spacer(Modifier.height(12.dp))
+        // Filters live here, not on the map.
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (tripDays.isNotEmpty()) {
+                SmallChip("All days", dayFilter == null, accent) { Haptics.tap(view); onDay(null) }
+                tripDays.forEach { d -> SmallChip("Day $d", dayFilter == d, accent) { Haptics.tap(view); onDay(d) } }
+            }
+            if (period != null) {
+                MapPeriod.values().forEach { p -> SmallChip(p.label, period == p, accent) { Haptics.tap(view); onPeriod(p) } }
+            }
+            SmallChip("🔥 Heatmap", heatmap, accent) { Haptics.tap(view); onHeatmap(!heatmap) }
+        }
+        if (categoryChips.size > 1) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                SmallChip("All", categoryFilter == null, accent) { Haptics.tap(view); onCategory(null) }
+                categoryChips.forEach { name ->
+                    SmallChip(name, categoryFilter == name, accent) {
+                        Haptics.tap(view); onCategory(if (categoryFilter == name) null else name)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+
+        if (heatmap) {
+            val places = remember(inArea) {
+                inArea.groupBy { it.merchant.trim().lowercase(Locale.ROOT) }
+                    .values
+                    .map { list -> Triple(list.first(), list.size, list.sumOf { it.amount }) }
+                    .sortedByDescending { it.third }
+                    .take(6)
+            }
+            val top = places.firstOrNull()?.third?.coerceAtLeast(1.0) ?: 1.0
+            if (places.isEmpty()) MapSheetEmpty()
+            places.forEachIndexed { i, (e, visits, total) ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onPick(e) }.padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("${i + 1}", modifier = Modifier.width(24.dp), fontWeight = FontWeight.Bold, color = accent)
+                    Column(Modifier.weight(1f)) {
+                        Text(e.merchant, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "$visits ${if (visits == 1) "visit" else "visits"}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Box(
+                            Modifier
+                                .padding(top = 4.dp)
+                                .fillMaxWidth((total / top).toFloat().coerceIn(0.05f, 1f))
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(accent)
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text(formatRupeeIndian(total), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                }
+            }
+        } else {
+            val rows = remember(inArea, referencePoint) {
+                val withDistance = inArea.map { e ->
+                    e to referencePoint?.let { haversineKm(it.latitude, it.longitude, e.latitude!!, e.longitude!!) }
+                }
+                // Nearby first when you're actually near them; otherwise newest first.
+                val near = withDistance.any { (it.second ?: Double.MAX_VALUE) <= NEARBY_KM }
+                (if (near) withDistance.sortedBy { it.second }
+                else withDistance.sortedByDescending { it.first.timestampMillis ?: 0L }).take(30)
+            }
+            if (rows.isEmpty()) MapSheetEmpty()
+            LazyColumn(modifier = Modifier.heightIn(max = 260.dp)) {
+                items(rows, key = { it.first.id }) { (e, km) ->
+                    val note = if (km != null && km <= NEARBY_KM) "${formatDistance(km)} · ${expenseWhen(e)}" else expenseWhen(e)
+                    MapExpenseRow(e, trailingNote = note) { onPick(e) }
+                }
+            }
+        }
+        }
+    }
+}
+
+@Composable
+private fun SmallChip(label: String, selected: Boolean, accent: Color, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) accent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) Brand.onAccent() else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+/** Distances are shown only when you're actually around (e.g. not 340 km from Goa). */
+private const val NEARBY_KM = 30.0
+
+/** "4 Oct · 8:40 PM" from the timestamp, else the stored date text. */
+private fun expenseWhen(e: Expense): String =
+    e.timestampMillis?.let {
+        java.text.SimpleDateFormat("d MMM · h:mm a", Locale.getDefault()).format(java.util.Date(it))
+    } ?: e.date
+
+@Composable
+private fun MapSheetEmpty() {
+    Text(
+        "Nothing in this part of the map. Move the map or change the filter.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(vertical = 10.dp)
+    )
+}
+
+@Composable
+private fun MapExpenseRow(expense: Expense, trailingNote: String, onClick: () -> Unit) {
+    val category = categoryByName(expense.category)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier.size(38.dp).clip(CircleShape).background(category.fgColor.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(category.icon, contentDescription = null, tint = category.fgColor, modifier = Modifier.size(18.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(expense.merchant, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(trailingNote, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(formatRupeeIndian(expense.amount), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Tap card: merchant, category, time, amount, split line, Directions + Open. */
+@Composable
+private fun MapExpenseCard(
+    expense: Expense,
+    accent: Color,
+    onOpen: () -> Unit,
+    onDirections: () -> Unit,
+    onClose: () -> Unit
+) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    val category = categoryByName(expense.category)
+    var participants by remember(expense.id) { mutableStateOf<List<ExpenseParticipant>>(emptyList()) }
+    LaunchedEffect(expense.id) {
+        participants = runCatching {
+            AppDatabase.getDatabase(context).expenseParticipantDao().getParticipantsForExpense(expense.id)
+        }.getOrDefault(emptyList())
+    }
+    val paidByMe = expense.payer.equals("Me", ignoreCase = true)
+    val others = participants.filterNot { it.personName.equals("Me", ignoreCase = true) }
+    val splitLine: String? = when {
+        participants.size <= 1 && paidByMe -> null
+        paidByMe -> "Split ${participants.size} ways · others owe ${formatRupeeIndian(others.sumOf { it.shareAmount })}"
+        else -> {
+            val mine = participants.filter { it.personName.equals("Me", ignoreCase = true) }.sumOf { it.shareAmount }
+            "Paid by ${expense.payer}" + if (mine > 0.01) " · your share ${formatRupeeIndian(mine)}" else ""
+        }
+    }
+    val shape = RoundedCornerShape(24.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(mapGlass())
+            .border(1.dp, mapLine(), shape)
+            // Swipe the card down to close it.
+            .pointerInput(expense.id) {
+                var total = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { total = 0f },
+                    onDragEnd = { if (total > 40f) { Haptics.tap(view); onClose() } }
+                ) { _, dy -> total += dy }
+            }
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.size(42.dp).clip(CircleShape).background(category.fgColor),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(category.icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(expense.merchant, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    "${category.name} · ${expenseWhen(expense)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (splitLine != null) {
+                    Text(splitLine, style = MaterialTheme.typography.labelSmall, color = accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(formatRupeeIndian(expense.amount), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            MapActionButton("Directions", primary = false, accent = accent, modifier = Modifier.weight(1f), onClick = onDirections)
+            MapActionButton("Open", primary = true, accent = accent, modifier = Modifier.weight(1f), onClick = onOpen)
+        }
+    }
+}
+
+@Composable
+private fun MapActionButton(label: String, primary: Boolean, accent: Color, modifier: Modifier, onClick: () -> Unit) {
+    val source = remember { MutableInteractionSource() }
+    Box(
+        modifier = modifier
+            .height(42.dp)
+            .pressScale(source)
+            .clip(RoundedCornerShape(23.dp))
+            .background(if (primary) accent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+            .clickable(interactionSource = source, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = if (primary) Brand.onAccent() else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+private fun avatarColor(name: String): Color {
+    val palette = listOf(0xFFFFB86B, 0xFF8FB8FF, 0xFFFF9EAA, 0xFFB79CFF, 0xFFFFD86B, 0xFF7FE0D0)
+    return Color(palette[(name.lowercase().hashCode() and 0x7fffffff) % palette.size])
+}
+
+// ---------------------------------------------------------------------------
+// Marker bitmaps
+// ---------------------------------------------------------------------------
+
+/** Emoji drawn inside the pin's coloured circle (Material icons can't be drawn into a marker bitmap simply). */
+private fun categoryEmoji(name: String): String = when (name.lowercase(Locale.ROOT)) {
+    "food" -> "🍔"
+    "groceries" -> "🛒"
+    "transport" -> "🚕"
+    "travel" -> "✈️"
+    "shopping" -> "🛍️"
+    "bills" -> "🧾"
+    "fuel" -> "⛽"
+    "health" -> "💊"
+    "subscriptions" -> "📺"
+    "entertainment" -> "🎬"
+    "other" -> "💸"
+    else -> name.take(1).uppercase()
+}
+
+private val pinCache = mutableMapOf<String, BitmapDescriptor>()
+
+@Composable
+private fun rememberExpensePin(emoji: String, text: String, color: Color, selected: Boolean, dark: Boolean): BitmapDescriptor {
+    val argb = color.toArgb()
+    return remember(emoji, text, argb, selected, dark) {
+        pinCache.getOrPut("p|$emoji|$text|$argb|$selected|$dark") { createExpensePin(emoji, text, argb, selected, dark) }
+    }
+}
+
+@Composable
+private fun rememberDotPin(emoji: String, color: Color, dark: Boolean): BitmapDescriptor {
+    val argb = color.toArgb()
+    return remember(emoji, argb, dark) {
+        pinCache.getOrPut("d|$emoji|$argb|$dark") { createDotPin(emoji, argb, dark) }
+    }
+}
+
+/** Small category dot (no amount) — the calm default pin. */
+private fun createDotPin(emoji: String, colorArgb: Int, dark: Boolean): BitmapDescriptor {
+    val d = 3f
+    val size = (30f * d).toInt()
+    val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+    val c = android.graphics.Canvas(bmp)
+    val r = size / 2f
+    c.drawCircle(r, r, r, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = if (dark) 0xFF0C1411.toInt() else android.graphics.Color.WHITE
+    })
+    c.drawCircle(r, r, r - 2.5f * d, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = colorArgb })
+    val ep = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 13f * d
+        textAlign = android.graphics.Paint.Align.CENTER
         color = android.graphics.Color.WHITE
-        textSize = textSizePx
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+    c.drawText(emoji, r, r - (ep.descent() + ep.ascent()) / 2f, ep)
+    return runCatching { BitmapDescriptorFactory.fromBitmap(bmp) }.getOrElse { BitmapDescriptorFactory.defaultMarker() }
+}
+
+@Composable
+private fun rememberClusterIcon(count: Int, accent: Color): BitmapDescriptor {
+    val argb = accent.toArgb()
+    return remember(count, argb) {
+        pinCache.getOrPut("c|$count|$argb") { createClusterIcon(count, argb) }
+    }
+}
+
+private fun createExpensePin(emoji: String, text: String, colorArgb: Int, selected: Boolean, dark: Boolean): BitmapDescriptor {
+    val d = 3f
+    val bodyH = 30f * d
+    val tailH = 7f * d
+    val circle = 24f * d
+    val pad = 3f * d
+    val stroke = 1.5f * d
+
+    val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 13f * d
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        color = when {
+            selected -> 0xFF06130D.toInt()
+            dark -> android.graphics.Color.WHITE
+            else -> 0xFF14201B.toInt()
+        }
+    }
+    val textW = textPaint.measureText(text)
+    val width = pad + circle + 6f * d + textW + 10f * d
+    val bmp = android.graphics.Bitmap.createBitmap(
+        (width + stroke * 2).toInt(), (bodyH + tailH + stroke * 2).toInt(), android.graphics.Bitmap.Config.ARGB_8888
+    )
+    val c = android.graphics.Canvas(bmp)
+    val left = stroke
+    val top = stroke
+    val rect = android.graphics.RectF(left, top, left + width, top + bodyH)
+
+    val bodyPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = when {
+            selected -> colorArgb
+            dark -> 0xEB0E1613.toInt()
+            else -> android.graphics.Color.WHITE
+        }
+    }
+    val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = stroke
+        color = colorArgb
+    }
+    // Tail under the pill (points at the spot).
+    val cx = left + width / 2f
+    val tail = android.graphics.Path().apply {
+        moveTo(cx - 6f * d, top + bodyH - 1f)
+        lineTo(cx + 6f * d, top + bodyH - 1f)
+        lineTo(cx, top + bodyH + tailH)
+        close()
+    }
+    c.drawPath(tail, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = colorArgb })
+    c.drawRoundRect(rect, bodyH / 2f, bodyH / 2f, bodyPaint)
+    c.drawRoundRect(rect, bodyH / 2f, bodyH / 2f, borderPaint)
+
+    // Icon circle + emoji.
+    val ccx = left + pad + circle / 2f
+    val ccy = top + bodyH / 2f
+    c.drawCircle(ccx, ccy, circle / 2f, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = if (selected) 0xFF06130D.toInt() else colorArgb
+    })
+    val emojiPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 12f * d
+        textAlign = android.graphics.Paint.Align.CENTER
+        color = android.graphics.Color.WHITE
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+    c.drawText(emoji, ccx, ccy - (emojiPaint.descent() + emojiPaint.ascent()) / 2f, emojiPaint)
+
+    // Amount.
+    val tx = left + pad + circle + 6f * d
+    c.drawText(text, tx, ccy - (textPaint.descent() + textPaint.ascent()) / 2f, textPaint)
+
+    return runCatching { BitmapDescriptorFactory.fromBitmap(bmp) }.getOrElse { BitmapDescriptorFactory.defaultMarker() }
+}
+
+private fun createClusterIcon(count: Int, accentArgb: Int): BitmapDescriptor {
+    val d = 3f
+    val size = (44f * d).toInt()
+    val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+    val c = android.graphics.Canvas(bmp)
+    val r = size / 2f
+    val glow = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = (accentArgb and 0x00FFFFFF) or (0x40 shl 24)
+    }
+    c.drawCircle(r, r, r, glow)
+    c.drawCircle(r, r, 17f * d, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xB306130D.toInt() })
+    c.drawCircle(r, r, 15f * d, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = accentArgb })
+    val tp = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = (if (count > 99) 11f else 13f) * d
         typeface = android.graphics.Typeface.DEFAULT_BOLD
         textAlign = android.graphics.Paint.Align.CENTER
+        color = 0xFF06130D.toInt()
     }
-    val textWidth = textPaint.measureText(text)
-    val widthPx = (textWidth + paddingHPx * 2).coerceAtLeast(heightPx)
-
-    val bitmap = android.graphics.Bitmap.createBitmap(
-        widthPx.toInt().coerceAtLeast(1),
-        heightPx.toInt().coerceAtLeast(1),
-        android.graphics.Bitmap.Config.ARGB_8888
-    )
-    val canvas = android.graphics.Canvas(bitmap)
-
-    val bgPaint = android.graphics.Paint().apply {
-        isAntiAlias = true
-        color = backgroundArgb
-    }
-    val rect = android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
-    canvas.drawRoundRect(rect, heightPx / 2f, heightPx / 2f, bgPaint)
-
-    // A thin white ring so the pill stays legible over both light and dark map tiles.
-    val ringPaint = android.graphics.Paint().apply {
-        isAntiAlias = true
-        style = android.graphics.Paint.Style.STROKE
-        strokeWidth = 1.5f * density
-        color = android.graphics.Color.argb(180, 255, 255, 255)
-    }
-    canvas.drawRoundRect(rect, heightPx / 2f, heightPx / 2f, ringPaint)
-
-    val textY = bitmap.height / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-    canvas.drawText(text, bitmap.width / 2f, textY, textPaint)
-
-    // fromBitmap needs the Maps SDK initialized; MapsInitializer at startup
-    // covers that, but fall back to a plain default marker rather than crash
-    // the entire Map tab if anything here ever fails.
-    return runCatching { BitmapDescriptorFactory.fromBitmap(bitmap) }
-        .getOrElse { BitmapDescriptorFactory.defaultMarker() }
+    c.drawText(if (count > 999) "999+" else count.toString(), r, r - (tp.descent() + tp.ascent()) / 2f, tp)
+    return runCatching { BitmapDescriptorFactory.fromBitmap(bmp) }.getOrElse { BitmapDescriptorFactory.defaultMarker() }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Spending grouped into ~300 m cells: (centre, total). */
+private fun heatSpots(expenses: List<Expense>): List<Pair<LatLng, Double>> {
+    val cell = 0.003
+    return expenses
+        .groupBy { floor(it.latitude!! / cell).toInt() to floor(it.longitude!! / cell).toInt() }
+        .values
+        .map { g -> LatLng(g.map { it.latitude!! }.average(), g.map { it.longitude!! }.average()) to g.sumOf { it.amount } }
+}
+
+private fun startOfDay(ms: Long): Long = Calendar.getInstance().apply {
+    timeInMillis = ms
+    set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+}.timeInMillis
+
+private fun startOfMonth(ms: Long): Long = Calendar.getInstance().apply {
+    timeInMillis = startOfDay(ms)
+    set(Calendar.DAY_OF_MONTH, 1)
+}.timeInMillis
 
 private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val earthRadiusKm = 6371.0
@@ -571,35 +1273,51 @@ private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double):
     val dLon = Math.toRadians(lon2 - lon1)
     val a = sin(dLat / 2).pow(2) +
         cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2).pow(2)
-    val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    return earthRadiusKm * c
+    return earthRadiusKm * 2 * atan2(sqrt(a), sqrt(1 - a))
 }
 
 private fun formatDistance(km: Double): String = if (km < 1.0) {
-    "${(km * 1000).toInt()} m away"
+    "${(km * 1000).toInt()} m"
 } else {
-    "${String.format(Locale.US, "%.1f", km)} km away"
+    "${String.format(Locale.US, "%.1f", km)} km"
 }
 
-// Standard "Night" Google Maps style (roads/water/POI recolored for a dark
-// background) — only applied when the system is in dark mode; MapProperties
-// falls back to the normal map otherwise.
+// Splitlee dark: deep green land, quiet roads, no business/transit clutter.
 private const val DARK_MAP_STYLE_JSON = """
 [
-  {"elementType":"geometry","stylers":[{"color":"#1a201e"}]},
-  {"elementType":"labels.text.stroke","stylers":[{"color":"#1a201e"}]},
-  {"elementType":"labels.text.fill","stylers":[{"color":"#8e9a95"}]},
-  {"featureType":"administrative","elementType":"geometry","stylers":[{"color":"#3a4842"}]},
-  {"featureType":"poi","elementType":"geometry","stylers":[{"color":"#212a26"}]},
-  {"featureType":"poi","elementType":"labels.text.fill","stylers":[{"color":"#6b8f7e"}]},
-  {"featureType":"poi.park","elementType":"geometry","stylers":[{"color":"#12251c"}]},
-  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#2a3330"}]},
-  {"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#141917"}]},
-  {"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#8e9a95"}]},
-  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#3a4a44"}]},
-  {"featureType":"transit","elementType":"geometry","stylers":[{"color":"#212a26"}]},
-  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#0a1a2a"}]},
-  {"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#5e8df2"}]}
+  {"elementType":"geometry","stylers":[{"color":"#0e1613"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#0e1613"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#7f948b"}]},
+  {"featureType":"administrative","elementType":"geometry","stylers":[{"color":"#2a3833"}]},
+  {"featureType":"poi","elementType":"labels","stylers":[{"visibility":"off"}]},
+  {"featureType":"poi.business","stylers":[{"visibility":"off"}]},
+  {"featureType":"poi","elementType":"geometry","stylers":[{"color":"#121d19"}]},
+  {"featureType":"poi.park","elementType":"geometry","stylers":[{"color":"#10231a"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#1b2723"}]},
+  {"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#0e1613"}]},
+  {"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#6f857c"}]},
+  {"featureType":"road","elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#24352f"}]},
+  {"featureType":"transit","stylers":[{"visibility":"off"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#0b1c23"}]},
+  {"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#4f6f7c"}]}
+]
+"""
+
+// Light: soft grey land, white roads, same decluttering.
+private const val LIGHT_MAP_STYLE_JSON = """
+[
+  {"elementType":"geometry","stylers":[{"color":"#f3f5f4"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#6b7772"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#f3f5f4"}]},
+  {"featureType":"poi","elementType":"labels","stylers":[{"visibility":"off"}]},
+  {"featureType":"poi.business","stylers":[{"visibility":"off"}]},
+  {"featureType":"poi.park","elementType":"geometry","stylers":[{"color":"#e2f0e6"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#ffffff"}]},
+  {"featureType":"road","elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"featureType":"road.highway","elementType":"geometry.stroke","stylers":[{"color":"#e3e7e5"}]},
+  {"featureType":"transit","stylers":[{"visibility":"off"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#d7e9f2"}]}
 ]
 """
 
@@ -609,35 +1327,22 @@ private data class MapCluster(
 )
 
 /**
- * Naive grid-based clustering: buckets expenses into cells sized relative to the
- * current zoom level, then collapses each bucket into one cluster centered on the
- * average position of the expenses in it. Not pixel-perfect (a point right on a
- * cell boundary can end up in a different bucket than a very close neighbour),
- * but it's enough to stop a zoomed-out map from being a wall of overlapping pins,
- * without pulling in a new, unverified clustering dependency.
+ * Grid clustering: cells sized by zoom; each cell becomes one cluster at the
+ * average position. Good enough to keep a zoomed-out map readable without a
+ * new clustering dependency.
  */
 private fun clusterExpenses(expenses: List<Expense>, zoom: Float): List<MapCluster> {
     val locatable = expenses.filter { it.latitude != null && it.longitude != null }
     if (locatable.isEmpty()) return emptyList()
-
-    // Bigger cells at low zoom (zoomed out, world/country view) so nearby pins
-    // merge into one cluster; smaller cells at high zoom (street level) so real
-    // individual expenses stay separate. Clamped so it never over- or under-clusters.
     val cellSizeDegrees = (60.0 / 2.0.pow(zoom.toDouble())).coerceIn(0.0008, 20.0)
-
     return locatable
-        .groupBy { expense ->
-            val latCell = floor(expense.latitude!! / cellSizeDegrees).toInt()
-            val lngCell = floor(expense.longitude!! / cellSizeDegrees).toInt()
-            latCell to lngCell
+        .groupBy { e ->
+            floor(e.latitude!! / cellSizeDegrees).toInt() to floor(e.longitude!! / cellSizeDegrees).toInt()
         }
         .values
         .map { group ->
             MapCluster(
-                center = LatLng(
-                    group.map { it.latitude!! }.average(),
-                    group.map { it.longitude!! }.average()
-                ),
+                center = LatLng(group.map { it.latitude!! }.average(), group.map { it.longitude!! }.average()),
                 expenses = group
             )
         }

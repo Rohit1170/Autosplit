@@ -96,7 +96,7 @@ fun CategoryDetailSheet(
         .sortedByDescending { it.second }
     val shown = merchantFilter?.let { m -> data.items.filter { it.expense.merchant.trim().ifEmpty { "Unknown" } == m } }
         ?: data.items
-    val positive = if (dark) Color(0xFF2FD39A) else Color(0xFF14A87C)
+    val positive = Brand.accent()
     val warn = Color(0xFFF0A63C)
     val card = if (dark) Color(0xFF1A221F) else Color(0xFFE8EFEA)
 

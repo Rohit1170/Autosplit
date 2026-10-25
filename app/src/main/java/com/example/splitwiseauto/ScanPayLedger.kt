@@ -73,7 +73,7 @@ object ScanPayLedger {
                 latitude = location?.latitude,
                 longitude = location?.longitude,
                 timestampMillis = whenMillis,
-                tripId = ActiveTripStore.getActiveTripId(context)
+                tripId = ActiveTripStore.getRecordingTripId(context)
             )
         ).toInt()
 

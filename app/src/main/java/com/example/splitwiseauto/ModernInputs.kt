@@ -69,7 +69,7 @@ import java.util.Locale
  *    like date/time).
  */
 
-private val Accent = Color(0xFF2FD39A)
+private val Accent: Color @Composable get() = Brand.accent()
 private val Danger = Color(0xFFFF6B6B)
 
 @Composable
@@ -138,6 +138,16 @@ fun WiseAmountField(
                 .modernCard(base = fieldBase(), radius = if (compact) 18.dp else 24.dp, borderColor = edge)
         ) {
             // Hidden input owns focus + keyboard; caret is kept at the end.
+            // Its system cursor handle (the teardrop) would sit at the hidden
+            // text's start, on top of the ₹, so make it invisible — our own
+            // BlinkingCaret is the visible marker.
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.foundation.text.selection.LocalTextSelectionColors provides
+                    androidx.compose.foundation.text.selection.TextSelectionColors(
+                        handleColor = Color.Transparent,
+                        backgroundColor = Color.Transparent
+                    )
+            ) {
             BasicTextField(
                 value = TextFieldValue(text = value, selection = TextRange(value.length)),
                 onValueChange = { onValueChange(sanitizeAmount(it.text)) },
@@ -151,6 +161,7 @@ fun WiseAmountField(
                     .focusRequester(focusRequester)
                     .onFocusChanged { focused = it.isFocused }
             )
+            }
             Column(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
@@ -181,12 +192,29 @@ fun WiseAmountField(
                         "0",
                         style = numberStyle,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
-                        maxLines = 1
+                        maxLines = 1,
+                        modifier = Modifier.alignByBaseline()
                     )
                 } else {
-                    AnimatedAmountText(display = display, style = numberStyle, color = numberColor)
+                    AnimatedAmountText(
+                        display = display,
+                        style = numberStyle,
+                        color = numberColor,
+                        modifier = Modifier.alignByBaseline()
+                    )
                 }
-                BlinkingCaret(visible = focused, heightDp = fontSp * 1.05f, color = Accent)
+                // Caret sits on the digits' baseline (dipping ~10% below it)
+                // and is sized from the font in sp → dp, so it lines up with
+                // the numbers instead of floating on the text box's centre.
+                val caretHeight = with(androidx.compose.ui.platform.LocalDensity.current) {
+                    (fontSp * 0.9f).sp.toDp()
+                }
+                BlinkingCaret(
+                    visible = focused,
+                    height = caretHeight,
+                    color = Accent,
+                    modifier = Modifier.alignBy { (it.measuredHeight * 0.89f).toInt() }
+                )
             }
         }
         if (hint != null) {
@@ -279,7 +307,12 @@ private class ShownGlyph(
  * they sit, so regrouping springs the new comma in.
  */
 @Composable
-private fun AnimatedAmountText(display: String, style: TextStyle, color: Color) {
+private fun AnimatedAmountText(
+    display: String,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val still = remember { reducedMotion(context) }
     val scope = rememberCoroutineScope()
@@ -320,7 +353,7 @@ private fun AnimatedAmountText(display: String, style: TextStyle, color: Color) 
         shown.clear()
         shown.addAll(next + stillLeaving)
     }
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         shown.forEach { g ->
             key(g.key + if (g.leaving) "~" else "") {
                 Text(
@@ -355,7 +388,12 @@ private fun glyphKeys(display: String): List<Pair<String, Char>> {
 }
 
 @Composable
-private fun BlinkingCaret(visible: Boolean, heightDp: Float, color: Color) {
+private fun BlinkingCaret(
+    visible: Boolean,
+    height: Dp,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
     if (!visible) return
     val blink = rememberInfiniteTransition()
     val a by blink.animateFloat(
@@ -364,10 +402,10 @@ private fun BlinkingCaret(visible: Boolean, heightDp: Float, color: Color) {
         animationSpec = infiniteRepeatable(tween(530, easing = LinearEasing), RepeatMode.Reverse)
     )
     Box(
-        modifier = Modifier
+        modifier = modifier
             .padding(start = 3.dp)
             .width(2.5.dp)
-            .height(heightDp.dp)
+            .height(height)
             .graphicsLayer { alpha = if (a > 0.5f) 1f else 0f }
             .background(color, RoundedCornerShape(2.dp))
     )

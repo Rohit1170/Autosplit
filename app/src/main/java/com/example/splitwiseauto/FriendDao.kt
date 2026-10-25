@@ -19,6 +19,9 @@ interface FriendDao {
     @Query("UPDATE friends SET name = :newName WHERE id = :friendId")
     suspend fun renameFriend(friendId: Int, newName: String)
 
+    @Query("UPDATE friends SET phone = :phone WHERE id = :friendId")
+    suspend fun setPhone(friendId: Int, phone: String?)
+
     @Query("DELETE FROM friends WHERE id = :friendId")
     suspend fun deleteFriendById(friendId: Int)
 

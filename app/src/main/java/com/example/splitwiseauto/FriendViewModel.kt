@@ -81,7 +81,7 @@ class FriendViewModel : ViewModel() {
         }
     }
 
-    fun addFriend(name: String) {
+    fun addFriend(name: String, phone: String? = null) {
         val cleanName = name.trim()
 
         if (cleanName.isBlank()) {
@@ -95,7 +95,7 @@ class FriendViewModel : ViewModel() {
 
             if (existingFriend == null) {
                 friendDao.insertFriend(
-                    Friend(name = cleanName)
+                    Friend(name = cleanName, phone = PhoneNumbers.normalize(phone))
                 )
 
                 refresh()
@@ -132,6 +132,16 @@ class FriendViewModel : ViewModel() {
             expenseParticipantDao.renameParticipant(oldName, cleanName)
             expenseDao.renamePayer(oldName, cleanName)
 
+            refresh()
+        }
+    }
+
+    /** Saves (or clears) a friend's number. */
+    fun setPhone(friend: Friend, phone: String?) {
+        val clean = PhoneNumbers.normalize(phone)
+        if (clean == friend.phone) return
+        viewModelScope.launch {
+            friendDao.setPhone(friend.id, clean)
             refresh()
         }
     }

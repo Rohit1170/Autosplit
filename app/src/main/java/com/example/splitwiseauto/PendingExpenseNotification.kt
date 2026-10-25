@@ -1,5 +1,6 @@
 package com.example.splitwiseauto
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -45,5 +46,11 @@ data class PendingExpenseNotification(
 
     // Set alongside source = "scan_pay" — links back to the payment_attempts
     // row this notification was adopted from. Null otherwise.
-    val paymentAttemptId: Int? = null
+    val paymentAttemptId: Int? = null,
+
+    // v18: foreign-currency spend (see Expense.originalAmount).
+    val originalAmount: Double? = null,
+    val originalCurrency: String? = null,
+    @ColumnInfo(defaultValue = "0")
+    val fxEstimated: Boolean = false
 )

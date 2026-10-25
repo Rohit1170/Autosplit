@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.SplitWiseAuto" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.SplitWiseAuto" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Screens slide in from the right and back out (240 ms). -->
+        <item name="android:windowAnimationStyle">@style/SplitleeScreenMotion</item>
+    </style>
+
+    <style name="SplitleeScreenMotion" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/screen_open_enter</item>
+        <item name="android:activityOpenExitAnimation">@anim/screen_open_exit</item>
+        <item name="android:activityCloseEnterAnimation">@anim/screen_close_enter</item>
+        <item name="android:activityCloseExitAnimation">@anim/screen_close_exit</item>
+    </style>
 </resources>

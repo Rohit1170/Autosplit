@@ -69,3 +69,34 @@ private fun decodeUriComponent(value: String): String =
     } catch (e: Exception) {
         value
     }
+
+/** What kind of QR this is, for the note shown before paying. */
+enum class UpiQrKind {
+    /** A person's UPI ID. UPI apps block paying these from another app. */
+    PERSONAL,
+    /** A merchant QR with a gateway signature (`sign=`). These usually go through. */
+    MERCHANT_SIGNED,
+    /** A shop QR without a signature. The UPI app may decline it. */
+    MERCHANT_UNSIGNED,
+    /** Not from a scanned QR; nothing to say. */
+    UNKNOWN
+}
+
+/**
+ * Merchant QRs carry a merchant code (`mc`, not 0000) or merchant fields
+ * (`mode`, `orgid`, `purpose`, `mid`, `msid`, `mtid`). Personal QRs have
+ * only pa/pn (and sometimes am/cu/tn, or mc=0000).
+ */
+fun UpiPaymentRequest.kind(): UpiQrKind {
+    if (raw.isBlank()) return UpiQrKind.UNKNOWN
+    val params = raw.substringAfter('?', "").split('&').mapNotNull { pair ->
+        val idx = pair.indexOf('=')
+        if (idx <= 0) null else pair.substring(0, idx).lowercase() to pair.substring(idx + 1)
+    }.toMap()
+    if (!params["sign"].isNullOrBlank()) return UpiQrKind.MERCHANT_SIGNED
+    val mc = params["mc"]?.trim().orEmpty()
+    val merchantCode = mc.isNotEmpty() && mc.trimStart('0').isNotEmpty()
+    val merchantFields = listOf("mode", "orgid", "purpose", "mid", "msid", "mtid")
+        .any { !params[it].isNullOrBlank() }
+    return if (merchantCode || merchantFields) UpiQrKind.MERCHANT_UNSIGNED else UpiQrKind.PERSONAL
+}

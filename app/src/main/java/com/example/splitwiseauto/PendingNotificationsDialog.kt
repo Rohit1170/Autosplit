@@ -65,12 +65,6 @@ fun PendingNotificationsDialog(
         TextButton(onClick = { showSmsCheck = true }) {
             Text("Bank SMS not showing up? Check recent SMS")
         }
-        // Home-screen widget look (also reachable by long-pressing the widget).
-        TextButton(onClick = {
-            context.startActivity(android.content.Intent(context, WidgetThemeActivity::class.java))
-        }) {
-            Text("Widget theme")
-        }
         if (pending.isEmpty() && payments.isEmpty()) {
             Text(
                 text = "Nothing pending — you're all caught up.",
@@ -99,6 +93,9 @@ fun PendingNotificationsDialog(
                                 putExtra("pendingNotificationId", item.id)
                                 item.source?.let { putExtra("source", it) }
                                 item.paymentAttemptId?.let { putExtra("paymentAttemptId", it) }
+                                item.originalAmount?.let { putExtra("originalAmount", it) }
+                                item.originalCurrency?.let { putExtra("originalCurrency", it) }
+                                putExtra("fxEstimated", item.fxEstimated)
                             }
                             context.startActivity(intent)
                             onDismiss()
@@ -239,7 +236,10 @@ private fun PendingNotificationRow(
                     }
                 }
                 Text(
-                    text = "${formatRupeeIndian(item.amount)} • ${item.bank}",
+                    text = (if (item.originalCurrency != null && item.originalAmount != null)
+                        "${ForeignCurrency.label(item.originalCurrency, item.originalAmount)} · " +
+                            (if (item.fxEstimated) "≈ " else "") else "") +
+                        "${formatRupeeIndian(item.amount)} • ${item.bank}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

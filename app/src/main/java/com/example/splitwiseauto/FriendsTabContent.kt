@@ -38,10 +38,12 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -71,9 +73,20 @@ fun FriendsTabContent(
     totalOwedToYou: Double,
     onFriendLongPress: (Friend) -> Unit,
     onFriendDoubleTap: (Friend) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // Trip mode: "Goa · 3 – 9 Oct" — balances are from that trip only.
+    tripLabel: String? = null,
+    // Per-expense paid-back status (for group balances).
+    settlement: Map<Int, SettleStatus.ExpenseSettlement> = emptyMap(),
+    // Tap a friend: their trends.
+    onFriendTap: (Friend) -> Unit = {}
 ) {
     val context = LocalContext.current
+    // Remind sheet (WhatsApp / SMS / other apps, with your pay QR).
+    var remindFor by remember { mutableStateOf<Pair<Friend, Double>?>(null) }
+    remindFor?.let { (f, amt) ->
+        RemindSheet(friendName = f.name, amount = amt, forWhat = tripLabel, onDismiss = { remindFor = null })
+    }
     val displayFriends = friends.filterNot {
         it.name.trim().equals("Me", ignoreCase = true)
     }
@@ -115,6 +128,34 @@ fun FriendsTabContent(
 
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (tripLabel != null) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(FriendsTokens.accent().copy(alpha = 0.10f))
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Place,
+                        contentDescription = null,
+                        tint = FriendsTokens.accent(),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(tripLabel, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Splits from this trip only. Settle up still clears the full balance.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FriendsTokens.mut()
+                        )
+                    }
+                }
+            }
+        }
 
         item {
             Text(
@@ -128,6 +169,14 @@ fun FriendsTabContent(
         item {
             FriendsBalanceSummary(owedToYou = totalOwedToYou, youOwe = youOwe, mySpent = mySpent)
             Spacer(modifier = Modifier.height(4.dp))
+        }
+
+        // Groups (not in trip mode: a trip is its own grouping).
+        if (tripLabel == null) {
+            item {
+                GroupsSection(friends = displayFriends, settlement = settlement)
+                Spacer(modifier = Modifier.height(6.dp))
+            }
         }
 
         item {
@@ -177,6 +226,7 @@ fun FriendsTabContent(
                         friend = friend,
                         balance = balances[friend.id] ?: FriendBalance(),
                         onLongPress = { onFriendLongPress(friend) },
+                        onTap = { onFriendTap(friend) },
                         onSettle = { onFriendDoubleTap(friend) },
                         onRemind = null
                     )
@@ -205,9 +255,10 @@ fun FriendsTabContent(
                         friend = friend,
                         balance = balance,
                         onLongPress = { onFriendLongPress(friend) },
+                        onTap = { onFriendTap(friend) },
                         onSettle = { onFriendDoubleTap(friend) },
                         onRemind = if (balance.netAmount > 0.01) {
-                            { sendReminder(context, friend, balance.netAmount) }
+                            { remindFor = friend to balance.netAmount }
                         } else null
                     )
                 }
@@ -227,6 +278,7 @@ fun FriendsTabContent(
                             friend = friend,
                             balance = balances[friend.id] ?: FriendBalance(),
                             onLongPress = { onFriendLongPress(friend) },
+                        onTap = { onFriendTap(friend) },
                             onSettle = { onFriendDoubleTap(friend) },
                             onRemind = null,
                             muted = true
@@ -240,11 +292,11 @@ fun FriendsTabContent(
 
 /** Local, Friends-screen-only tokens — see the matching object in HomeTabContent.kt for why these aren't wired into Theme.kt. */
 private object FriendsTokens {
-    @Composable fun accent(): Color = if (isSystemInDarkTheme()) Color(0xFF2FD39A) else Color(0xFF14A87C)
+    @Composable fun accent(): Color = Brand.accent()
     @Composable fun warn(): Color = Color(0xFFF0A63C)
-    @Composable fun card2(): Color = if (isSystemInDarkTheme()) Color(0xFF1A201E) else Color(0xFFE8EFEA)
-    @Composable fun line(): Color = if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color(0xFF12201A).copy(alpha = 0.10f)
-    @Composable fun mut(): Color = if (isSystemInDarkTheme()) Color(0xFF8E9A95) else Color(0xFF5F6E66)
+    @Composable fun card2(): Color = Brand.card2(if (isSystemInDarkTheme()) Color(0xFF1A201E) else Color(0xFFE8EFEA))
+    @Composable fun line(): Color = Brand.line(if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color(0xFF12201A).copy(alpha = 0.10f))
+    @Composable fun mut(): Color = Brand.muted(if (isSystemInDarkTheme()) Color(0xFF8E9A95) else Color(0xFF5F6E66))
 }
 
 @Composable
@@ -371,7 +423,8 @@ private fun FriendExpenseCard(
     onLongPress: () -> Unit,
     onSettle: () -> Unit,
     onRemind: (() -> Unit)?,
-    muted: Boolean = false
+    muted: Boolean = false,
+    onTap: () -> Unit = {}
 ) {
     val hasBalance = abs(balance.netAmount) > 0.01
     val view = androidx.compose.ui.platform.LocalView.current
@@ -380,7 +433,10 @@ private fun FriendExpenseCard(
         modifier = Modifier
             .fillMaxWidth()
             .pointerInput(friend.id) {
-                detectTapGestures(onLongPress = { Haptics.hold(view); onLongPress() })
+                detectTapGestures(
+                    onTap = { Haptics.tap(view); onTap() },
+                    onLongPress = { Haptics.hold(view); onLongPress() }
+                )
             },
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -436,27 +492,40 @@ private fun FriendExpenseCard(
 
             if (hasBalance) {
                 Spacer(modifier = Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (onRemind != null) {
-                        OutlinedButton(onClick = onRemind, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) {
-                            Icon(
-                                imageVector = Icons.Filled.Send,
-                                contentDescription = null,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Remind", style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
-                    TextButton(onClick = onSettle, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) {
+                // Settle up is the main action (left, filled); Remind is
+                // occasional, so it sits on the right as a quiet text button.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilledTonalButton(
+                        onClick = onSettle,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = FriendsTokens.accent().copy(alpha = 0.16f),
+                            contentColor = FriendsTokens.accent()
+                        )
+                    ) {
                         Icon(
                             imageVector = Icons.Filled.Check,
                             contentDescription = null,
-                            tint = FriendsTokens.accent(),
                             modifier = Modifier.size(15.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Settle up", style = MaterialTheme.typography.labelMedium, color = FriendsTokens.accent())
+                        Text("Settle up", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (onRemind != null) {
+                        TextButton(onClick = onRemind, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                            Icon(
+                                imageVector = Icons.Filled.Send,
+                                contentDescription = null,
+                                tint = FriendsTokens.mut(),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Remind", style = MaterialTheme.typography.labelMedium, color = FriendsTokens.mut())
+                        }
                     }
                 }
             }
@@ -476,20 +545,3 @@ private fun formatAmount(amount: Double): String {
     return formatRupeeIndian(amount)
 }
 
-/**
- * Opens the system share sheet with a prefilled reminder message — the
- * person picks whichever app (SMS/WhatsApp/etc.) actually reaches their
- * friend. Nothing is sent automatically and no contact is looked up; this
- * is the same kind of implicit ACTION_SEND the rest of the app already
- * uses for handing off to other apps, not a new permission or a silent send.
- */
-private fun sendReminder(context: Context, friend: Friend, amount: Double) {
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(
-            Intent.EXTRA_TEXT,
-            "Hey ${friend.name}, friendly reminder — you owe me ${formatAmount(amount)} on Splitlee."
-        )
-    }
-    context.startActivity(Intent.createChooser(intent, "Remind ${friend.name}"))
-}

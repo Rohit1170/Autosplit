@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -38,7 +39,11 @@ fun ModernFab(
 ) {
     val dark = isSystemInDarkTheme()
     val source = remember { MutableInteractionSource() }
-    val glow = Color(0xFF2FD39A)
+    val material = AppThemeStore.isMaterial
+    val glow = if (material) Color.Black else Color(0xFF2FD39A)
+    val primaryFill = MaterialTheme.colorScheme.primaryContainer
+    val primaryInk = MaterialTheme.colorScheme.onPrimaryContainer
+    val secondaryFill = MaterialTheme.colorScheme.surfaceVariant
     val base = modifier
         .pressScale(source)
         .size(diameter)
@@ -50,9 +55,12 @@ fun ModernFab(
         )
         .clip(CircleShape)
     val styled = if (primary) {
-        base
+        if (material) base.background(primaryFill)
+        else base
             .background(Brush.linearGradient(listOf(Color(0xFF5BF0C0), Color(0xFF14B88A))))
             .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+    } else if (material) {
+        base.background(secondaryFill)
     } else {
         base
             .background(
@@ -78,7 +86,13 @@ fun ModernFab(
         Icon(
             icon,
             contentDescription = contentDescription,
-            tint = if (primary) Color(0xFF06231A) else if (dark) Color(0xFF2FD39A) else Color(0xFF14A87C),
+            tint = when {
+                material && primary -> primaryInk
+                material -> Brand.accent()
+                primary -> Color(0xFF06231A)
+                dark -> Color(0xFF2FD39A)
+                else -> Color(0xFF14A87C)
+            },
             modifier = Modifier.size(if (primary) 28.dp else 22.dp)
         )
     }

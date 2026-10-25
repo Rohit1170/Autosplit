@@ -19,9 +19,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PaymentAttempt::class,
         AccountName::class,
         PendingPayment::class,
-        MerchantCategory::class
+        MerchantCategory::class,
+        SplitGroup::class,
+        GroupMember::class
     ],
-    version = 14,
+    version = 18,
     // Turned on starting at v9->v10 only: this captures the schema going
     // forward (needed so the 9->10 migration test has a real v9 schema
     // JSON to build its "before" database from) without trying to
@@ -53,6 +55,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pendingPaymentDao(): PendingPaymentDao
 
     abstract fun merchantCategoryDao(): MerchantCategoryDao
+
+    abstract fun groupDao(): GroupDao
 
     companion object {
 
@@ -294,8 +298,69 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // Purely additive: trip dates, closed time and hidden flag. Existing
+        // trips keep working (all new columns are null / 0 = open, visible).
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `trips` ADD COLUMN `startMillis` INTEGER")
+                database.execSQL("ALTER TABLE `trips` ADD COLUMN `endMillis` INTEGER")
+                database.execSQL("ALTER TABLE `trips` ADD COLUMN `closedAtMillis` INTEGER")
+                database.execSQL("ALTER TABLE `trips` ADD COLUMN `hidden` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        // Purely additive: groups, their members, and an optional groupId on
+        // expenses. No existing row or column is changed.
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `split_groups` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`createdAtMillis` INTEGER NOT NULL)"
+                )
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `group_members` (" +
+                        "`groupId` INTEGER NOT NULL, " +
+                        "`personName` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`groupId`, `personName`))"
+                )
+                database.execSQL("ALTER TABLE `expenses` ADD COLUMN `groupId` INTEGER")
+            }
+        }
+
+        // Purely additive: an optional phone number on friends (for reminders).
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `friends` ADD COLUMN `phone` TEXT")
+            }
+        }
+
+        // Purely additive: foreign-currency details on expenses and on the
+        // "To split" queue. Existing rows get NULL / 0 (= normal INR spend).
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                for (table in listOf("expenses", "pending_expense_notifications")) {
+                    database.execSQL("ALTER TABLE `$table` ADD COLUMN `originalAmount` REAL")
+                    database.execSQL("ALTER TABLE `$table` ADD COLUMN `originalCurrency` TEXT")
+                    database.execSQL("ALTER TABLE `$table` ADD COLUMN `fxEstimated` INTEGER NOT NULL DEFAULT 0")
+                }
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
+
+        /**
+         * Closes the open database so its file can be replaced (restore from
+         * backup). The next [getDatabase] opens the new file.
+         */
+        fun closeInstance() {
+            synchronized(this) {
+                INSTANCE?.close()
+                INSTANCE = null
+            }
+        }
 
         fun getDatabase(
             context: Context
@@ -321,7 +386,11 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_10_11,
                         MIGRATION_11_12,
                         MIGRATION_12_13,
-                        MIGRATION_13_14
+                        MIGRATION_13_14,
+                        MIGRATION_14_15,
+                        MIGRATION_15_16,
+                        MIGRATION_16_17,
+                        MIGRATION_17_18
                     )
                     .build()
 

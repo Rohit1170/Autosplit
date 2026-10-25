@@ -17,7 +17,17 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
     private val _loaded = MutableStateFlow(false)
     val loaded: StateFlow<Boolean> = _loaded
 
-    fun loadExpenses() {
+    // Trip mode: only that trip's pins (null = everything, as before).
+    private var tripId: Int? = null
+
+    /** Which mode the current list was loaded for (null = Main). Starts unset. */
+    private val _loadedFor = MutableStateFlow<Int?>(NOT_LOADED)
+    val loadedFor: StateFlow<Int?> = _loadedFor
+
+    companion object { const val NOT_LOADED = Int.MIN_VALUE }
+
+    fun loadExpenses(tripId: Int? = this.tripId) {
+        this.tripId = tripId
         viewModelScope.launch {
             // Same shared, Room-observed history Home/Insights/Friends use
             // (ExpenseRepository) instead of this being its own separate
@@ -25,6 +35,8 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
             _expensesWithLocation.value = ExpenseRepository.allExpenses(database.expenseDao())
                 .map { it.expense }
                 .filter { it.latitude != null && it.longitude != null }
+                .filter { tripId == null || it.tripId == tripId }
+            _loadedFor.value = tripId
             _loaded.value = true
         }
     }

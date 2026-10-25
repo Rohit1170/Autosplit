@@ -15,6 +15,9 @@
     -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Optional Google Drive backup (Settings > Backup) and map tiles. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!--
       Scan & Pay hands payments to the user's own UPI app via a standard
       upi://pay intent. No phone/call permissions are needed for that path,
@@ -41,6 +44,7 @@
         </intent>
     </queries>
     <application
+        android:name=".SplitleeApp"
 
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -78,6 +82,15 @@
             android:exported="false" />
         <activity
             android:name=".QrScanActivity"
+            android:exported="false" />
+        <activity
+            android:name=".BackupActivity"
+            android:exported="false" />
+        <activity
+            android:name=".PermissionsActivity"
+            android:exported="false" />
+        <activity
+            android:name=".InfoActivity"
             android:exported="false" />
         <!-- Shares exported CSV files (Data export). grantUriPermissions
              lets the chosen app read the one file we hand it; nothing else. -->
@@ -126,6 +139,41 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/splitlee_widget_info" />
         </receiver>
+        <!-- Full-screen settings (gear on Home). Internal only. -->
+        <!-- First-run intro (name, UPI ID). Internal only. -->
+        <activity
+            android:name=".IntroActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.SplitWiseAuto" />
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SplitWiseAuto" />
+
+        <!-- "Close on <date>" button on the trip reminder notification. -->
+        <receiver
+            android:name=".TripCloseReceiver"
+            android:exported="false" />
+
+        <!-- "Yes, settle" / "Not them" on the paid-back notification. -->
+        <receiver
+            android:name=".AutoSettleReceiver"
+            android:exported="false" />
+
+        <!-- Settings > App theme. Internal only. -->
+        <activity
+            android:name=".AppThemeActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SplitWiseAuto" />
+
+        <!-- Settings > Manage trips. Internal only. -->
+        <activity
+            android:name=".ManageTripsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SplitWiseAuto" />
+
         <!-- Widget theme picker: opened when the widget is customised
              (long-press → edit on Android 12+) and from the app. -->
         <activity

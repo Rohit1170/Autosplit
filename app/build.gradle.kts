@@ -40,8 +40,8 @@ android {
         applicationId = "com.example.splitwiseauto"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 6
+        versionName = "1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -162,6 +162,8 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("com.google.android.gms:play-services-maps:18.2.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+    // Google Drive backup: sign-in / Drive access (drive.appdata scope only).
+    implementation("com.google.android.gms:play-services-auth:21.2.0")
     implementation("com.google.maps.android:maps-compose:2.11.4")
 
     // QR scanning for "Scan & Pay" (USSD *99# flow)

@@ -63,9 +63,9 @@ private data class ParticipantState(
 
 /** Local, Split-screen-only tokens — see the matching object in HomeTabContent.kt for why these aren't wired into Theme.kt. */
 private object SplitTokens {
-    @Composable fun accent(): Color = if (isSystemInDarkTheme()) Color(0xFF2FD39A) else Color(0xFF14A87C)
+    @Composable fun accent(): Color = Brand.accent()
     @Composable fun warn(): Color = Color(0xFFF0A63C)
-    @Composable fun onAccent(): Color = Color(0xFF06231A)
+    @Composable fun onAccent(): Color = Brand.onAccent()
 }
 
 
@@ -696,10 +696,15 @@ private fun ParticipantCard(
 
 
             /*
-             * Circular selection indicator
+             * Circular selection indicator — lines up with the amount row
+             * (58dp field) when selected, not the whole card.
              */
             Box(
                 modifier = Modifier
+                    .then(
+                        if (selected) Modifier.align(Alignment.Bottom).padding(bottom = 13.dp)
+                        else Modifier
+                    )
                     .size(32.dp)
                     .clip(CircleShape)
                     .background(

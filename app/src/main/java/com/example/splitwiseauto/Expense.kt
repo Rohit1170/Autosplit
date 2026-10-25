@@ -1,5 +1,6 @@
 package com.example.splitwiseauto
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -49,5 +50,15 @@ data class Expense(
     // Set only when this expense was created from a Scan & Pay payment
     // attempt that resolved to SUCCESS — links back to payment_attempts for
     // audit purposes. Null for every expense created any other way.
-    val paymentAttemptId: Int? = null
+    val paymentAttemptId: Int? = null,
+
+    // v16: the group this split belongs to (null = no group).
+    val groupId: Int? = null,
+
+    // v18: foreign-currency spend ("PHP 518.09"); amount above stays INR.
+    val originalAmount: Double? = null,
+    val originalCurrency: String? = null,
+    // true = the INR amount is an estimate ("≈"), not what the bank charged.
+    @ColumnInfo(defaultValue = "0")
+    val fxEstimated: Boolean = false
 )

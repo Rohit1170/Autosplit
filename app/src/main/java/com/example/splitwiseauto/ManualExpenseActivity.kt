@@ -45,6 +45,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -77,7 +79,7 @@ class ManualExpenseActivity : ComponentActivity() {
         val initialTimestampMillis = intent.getLongExtra("timestampMillis", -1L).takeIf { it > 0 }
 
         setContent {
-            SplitWiseAutoTheme {
+            SplitleeTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -89,15 +91,16 @@ class ManualExpenseActivity : ComponentActivity() {
                         initialCategory = intent.getStringExtra("category"),
                         initialPayer = intent.getStringExtra("payer") ?: "Me",
                         initialTimestampMillis = initialTimestampMillis,
+                        initialAccount = SpendAccount.from(editingBank, editingAccountIdentifier),
                         isEditing = editingExpenseId != null,
                         onCancel = ::finish,
-                        onContinue = { amount, merchant, date, category, payer, timestampMillis, pickedByUser ->
+                        onContinue = { amount, merchant, date, category, payer, timestampMillis, pickedByUser, account ->
                             val original = intent.getStringExtra("category")
                             // Learn only from a real choice: a tap on a category
                             // for a new expense, or an actual change when editing.
                             val learn = pickedByUser &&
                                 (editingExpenseId == null || !category.equals(original, ignoreCase = true))
-                            openSplitConfirmation(amount, merchant, date, category, payer, timestampMillis, learn)
+                            openSplitConfirmation(amount, merchant, date, category, payer, timestampMillis, learn, account)
                         }
                     )
                 }
@@ -112,7 +115,8 @@ class ManualExpenseActivity : ComponentActivity() {
         category: String,
         payer: String,
         timestampMillis: Long,
-        learnCategory: Boolean
+        learnCategory: Boolean,
+        account: SpendAccount
     ) {
         lifecycleScope.launch {
             // Only stamp a fresh location for a brand-new expense. Editing an
@@ -131,14 +135,16 @@ class ManualExpenseActivity : ComponentActivity() {
                 putExtra("amount", amount.toString())
                 putExtra("merchant", merchant)
                 putExtra("date", date)
-                putExtra("bank", editingBank ?: "Cash")
+                // Which card/account (or cash) it was paid from — the Home
+                // card with the same bank + account number counts it.
+                putExtra("bank", account.bank)
                 putExtra("upi", "Manual")
                 putExtra("balance", "Unknown")
                 putExtra("category", category)
                 putExtra(ExpenseConfirmationActivity.EXTRA_LEARN_CATEGORY, learnCategory)
                 putExtra("payer", payer)
                 putExtra("timestampMillis", timestampMillis)
-                editingAccountIdentifier?.let { putExtra("accountIdentifier", it) }
+                account.accountIdentifier?.let { putExtra("accountIdentifier", it) }
                 editingExpenseId?.let { putExtra("expenseId", it) }
                 location?.let {
                     putExtra("latitude", it.latitude)
@@ -160,9 +166,10 @@ private fun ManualExpenseScreen(
     initialCategory: String?,
     initialPayer: String,
     initialTimestampMillis: Long?,
+    initialAccount: SpendAccount,
     isEditing: Boolean,
     onCancel: () -> Unit,
-    onContinue: (Double, String, String, String, String, Long, Boolean) -> Unit
+    onContinue: (Double, String, String, String, String, Long, Boolean, SpendAccount) -> Unit
 ) {
     var amountText by remember { mutableStateOf(initialAmount) }
     var merchant by remember { mutableStateOf(initialMerchant) }
@@ -184,6 +191,9 @@ private fun ManualExpenseScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     var payer by remember { mutableStateOf(initialPayer) }
     var showPayerPicker by remember { mutableStateOf(false) }
+    var account by remember { mutableStateOf(initialAccount) }
+    var showAccountPicker by remember { mutableStateOf(false) }
+    var accounts by remember { mutableStateOf(listOf(SpendAccount.CASH)) }
     var friends by remember { mutableStateOf<List<Friend>>(emptyList()) }
     // Bumped whenever a custom category is added/removed so the picker re-reads it.
     var categoriesVersion by remember { mutableStateOf(0) }
@@ -230,24 +240,35 @@ private fun ManualExpenseScreen(
             .filterNot { it.name.equals("Me", ignoreCase = true) }
     }
 
-    if (showPayerPicker) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showPayerPicker = false },
-            title = { Text("Who paid?") },
-            text = {
-                Column {
-                    (listOf("Me") + friends.map { it.name }).forEach { person ->
-                        TextButton(
-                            onClick = {
-                                payer = person
-                                showPayerPicker = false
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text(person) }
-                    }
-                }
+    LaunchedEffect(Unit) {
+        accounts = SpendAccount.knownAccounts(
+            AppDatabase.getDatabase(context).expenseDao().getAllExpenses(),
+            include = initialAccount
+        )
+    }
+    if (showAccountPicker) {
+        AccountPickerSheet(
+            accounts = accounts,
+            current = account,
+            onPick = {
+                account = it
+                showAccountPicker = false
             },
-            confirmButton = { TextButton(onClick = { showPayerPicker = false }) { Text("Cancel") } }
+            onDismiss = { showAccountPicker = false }
+        )
+    }
+
+    if (showPayerPicker) {
+        PayerPickerSheet(
+            people = listOf("Me") + friends.map { it.name }
+                .distinctBy { it.lowercase() }
+                .sortedBy { it.lowercase() },
+            current = payer,
+            onPick = { person ->
+                payer = person
+                showPayerPicker = false
+            },
+            onDismiss = { showPayerPicker = false }
         )
     }
 
@@ -491,6 +512,48 @@ private fun ManualExpenseScreen(
                     }
                 }
 
+                // Paid from: which card/account or cash. Only matters when
+                // you paid (a friend's payment isn't from your accounts).
+                if (payer.equals("Me", ignoreCase = true)) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showAccountPicker = true },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            AccountChipSwatch(account)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Paid from", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    account.label,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Text(
+                                account.caption,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Icon(
+                                imageVector = Icons.Filled.ChevronRight,
+                                contentDescription = "Change account"
+                            )
+                        }
+                    }
+                }
+
                 validationMessage?.let { message ->
                     Text(
                         text = message,
@@ -517,7 +580,8 @@ private fun ManualExpenseScreen(
                             selectedCategory,
                             payer,
                             dateMillis,
-                            categoryTappedByUser
+                            categoryTappedByUser,
+                            account
                         )
                     },
                     modifier = Modifier.fillMaxWidth().height(56.dp),
@@ -550,11 +614,9 @@ private fun expenseFieldColors() = TextFieldDefaults.outlinedTextFieldColors(
 
 /** Local, Add-bill-screen-only tokens — see the matching object in HomeTabContent.kt for why these aren't wired into Theme.kt. */
 private object AddBillTokens {
-    @Composable fun accent(): androidx.compose.ui.graphics.Color =
-        if (androidx.compose.foundation.isSystemInDarkTheme()) androidx.compose.ui.graphics.Color(0xFF2FD39A)
-        else androidx.compose.ui.graphics.Color(0xFF14A87C)
+    @Composable fun accent(): androidx.compose.ui.graphics.Color = Brand.accent()
     // The teal is bright enough in both modes that dark text reads better than white.
-    @Composable fun onAccent(): androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color(0xFF06231A)
+    @Composable fun onAccent(): androidx.compose.ui.graphics.Color = Brand.onAccent()
 }
 
 /**
@@ -624,7 +686,7 @@ private fun CategoryOption(
 @Composable
 private fun NewCategoryTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
     val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    val accent = Color(0xFF2FD39A)
+    val accent = Brand.accent()
     Column(
         modifier = modifier
             .pressScale(source)
@@ -730,4 +792,278 @@ private fun NewCategoryDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+
+/** Soft per-person tint so friends are easy to tell apart at a glance. */
+private val PayerAvatarTints = listOf(
+    Color(0xFF2FD39A), // mint
+    Color(0xFF5AB8FF), // sky
+    Color(0xFFA78BFA), // violet
+    Color(0xFFF5B754), // amber
+    Color(0xFFFF8A7A), // coral
+    Color(0xFF3CC7C0)  // teal
+)
+
+private fun payerTint(name: String): Color =
+    if (name.equals("Me", ignoreCase = true)) PayerAvatarTints[0]
+    else PayerAvatarTints[1 + Math.floorMod(name.lowercase().hashCode(), PayerAvatarTints.size - 1)]
+
+/**
+ * "Who paid?" picker: glass bottom sheet with avatar rows, the current payer
+ * highlighted with a mint check. Replaces the old centred text-button list.
+ */
+@Composable
+private fun PayerPickerSheet(
+    people: List<String>,
+    current: String,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    val accent = Brand.accent()
+    AppSheet(
+        title = "Who paid?",
+        subtitle = "Pick who paid for this expense",
+        onDismiss = onDismiss,
+        glass = true
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            people.forEach { person ->
+                val isMe = person.equals("Me", ignoreCase = true)
+                val selected = person.equals(current, ignoreCase = true)
+                val tint = payerTint(person)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            if (selected) accent.copy(alpha = 0.14f)
+                            else Color.White.copy(alpha = 0.04f)
+                        )
+                        .then(
+                            if (selected) Modifier.border(
+                                1.dp,
+                                accent.copy(alpha = 0.55f),
+                                RoundedCornerShape(16.dp)
+                            ) else Modifier
+                        )
+                        .clickable {
+                            Haptics.tap(view)
+                            onPick(person)
+                        }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(tint.copy(alpha = 0.18f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (isMe) "Y" else person.firstOrNull()?.uppercase() ?: "?",
+                            color = tint,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isMe) "You" else person.replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) accent else Color.Transparent)
+                            .then(
+                                if (selected) Modifier
+                                else Modifier.border(
+                                    1.5.dp,
+                                    Color.White.copy(alpha = 0.18f),
+                                    CircleShape
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selected) {
+                            Icon(
+                                imageVector = androidx.compose.material.icons.Icons.Filled.Check,
+                                contentDescription = "Selected",
+                                tint = Color(0xFF0B1210),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/**
+ * Where a manual expense was paid from: cash, the Slice app (UPI, no account
+ * number) or a bank card/account seen in your SMS. Stored as the expense's
+ * bank + accountIdentifier, the same keys Home groups its cards by.
+ */
+data class SpendAccount(val bank: String, val accountIdentifier: String?) {
+    val isCash: Boolean get() = bank.equals("Cash", ignoreCase = true) && accountIdentifier == null
+    val isSlice: Boolean get() = !isCash && accountIdentifier == null
+
+    val label: String get() = when {
+        isCash -> "Cash"
+        isSlice -> "Slice"
+        else -> accountIdentifier!!
+    }
+    val caption: String get() = when {
+        isCash -> "In hand"
+        isSlice -> "UPI"
+        else -> bank
+    }
+
+    companion object {
+        val CASH = SpendAccount("Cash", null)
+        val SLICE = SpendAccount("Slice", null)
+
+        fun from(bank: String?, accountIdentifier: String?): SpendAccount = when {
+            bank == null -> CASH
+            accountIdentifier != null -> SpendAccount(bank, accountIdentifier)
+            bank.equals("Cash", ignoreCase = true) -> CASH
+            // Keep the original bank text so editing doesn't rewrite it.
+            else -> SpendAccount(bank, null)
+        }
+
+        /** Cash, then cards/accounts most recently used first, then Slice if seen. */
+        fun knownAccounts(expenses: List<Expense>, include: SpendAccount): List<SpendAccount> {
+            val cards = expenses
+                .filter { it.accountIdentifier != null }
+                .map { SpendAccount(it.bank, it.accountIdentifier) }
+                .distinctBy { "${it.bank.lowercase()}|${it.accountIdentifier}" }
+            val sliceSeen = expenses.any { it.accountIdentifier == null && !it.bank.equals("Cash", ignoreCase = true) }
+            val list = buildList {
+                add(CASH)
+                addAll(cards)
+                if (sliceSeen) add(SLICE)
+            }
+            return if (list.none { it.sameAs(include) }) list + include else list
+        }
+    }
+
+    fun sameAs(other: SpendAccount): Boolean =
+        (isCash && other.isCash) || (isSlice && other.isSlice) ||
+            (bank.equals(other.bank, ignoreCase = true) && accountIdentifier == other.accountIdentifier)
+}
+
+/** Tiny card-shaped swatch: purple for Slice, mint for cash, slate for cards. */
+@Composable
+private fun AccountChipSwatch(account: SpendAccount) {
+    val colors = when {
+        account.isCash -> listOf(Color(0xFF178A62), Color(0xFF3FC28D))
+        account.isSlice -> listOf(Color(0xFF5A0FB4), Color(0xFFC63AF0))
+        else -> listOf(Color(0xFF2B3A52), Color(0xFF4A6A8F))
+    }
+    Box(
+        modifier = Modifier
+            .size(width = 40.dp, height = 28.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(Brush.linearGradient(colors)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = when {
+                account.isCash -> "\u20B9"
+                account.isSlice -> "S"
+                else -> account.bank.filter { it.isLetter() }.take(2).uppercase()
+            },
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.labelMedium
+        )
+    }
+}
+
+/** "Paid from" picker: same glass sheet style as "Who paid?". */
+@Composable
+private fun AccountPickerSheet(
+    accounts: List<SpendAccount>,
+    current: SpendAccount,
+    onPick: (SpendAccount) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    val accent = Brand.accent()
+    AppSheet(
+        title = "Paid from",
+        subtitle = "Counts towards that card on Home",
+        onDismiss = onDismiss,
+        glass = true
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            accounts.forEach { acc ->
+                val selected = acc.sameAs(current)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (selected) accent.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.04f))
+                        .then(
+                            if (selected) Modifier.border(1.dp, accent.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                            else Modifier
+                        )
+                        .clickable {
+                            Haptics.tap(view)
+                            onPick(acc)
+                        }
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AccountChipSwatch(acc)
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            acc.label,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            acc.caption,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) accent else Color.Transparent)
+                            .then(
+                                if (selected) Modifier
+                                else Modifier.border(1.5.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selected) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "Selected",
+                                tint = Color(0xFF0B1210),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

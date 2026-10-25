@@ -45,8 +45,11 @@ object QuickExpenseActions {
                 latitude = pending.latitude,
                 longitude = pending.longitude,
                 timestampMillis = pending.timestampMillis,
-                tripId = ActiveTripStore.getActiveTripId(context),
-                paymentAttemptId = pending.paymentAttemptId
+                tripId = ActiveTripStore.getRecordingTripId(context),
+                paymentAttemptId = pending.paymentAttemptId,
+                originalAmount = pending.originalAmount,
+                originalCurrency = pending.originalCurrency,
+                fxEstimated = pending.fxEstimated
             )
         ).toInt()
         db.expenseParticipantDao().insertParticipants(

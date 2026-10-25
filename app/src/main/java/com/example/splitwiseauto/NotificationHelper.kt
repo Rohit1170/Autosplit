@@ -66,6 +66,9 @@ fun showExpenseNotification(
         putExtra("timestampMillis", transaction.receivedAtMillis)
         putExtra("pendingNotificationId", pendingNotificationId)
         source?.let { putExtra("source", it) }
+        transaction.originalAmount?.let { putExtra("originalAmount", it) }
+        transaction.originalCurrency?.let { putExtra("originalCurrency", it) }
+        putExtra("fxEstimated", transaction.fxEstimated)
     }
 
     val pendingIntent = PendingIntent.getActivity(
@@ -96,12 +99,29 @@ fun showExpenseNotification(
         .setSmallIcon(R.drawable.ic_stat_splitlee)
         .setColor(androidx.core.content.ContextCompat.getColor(context, R.color.splitlee_brand_green))
         .apply {
-            if (askAboutPayment == null) {
-                setContentTitle("💸 ${formatRupeeIndian(transaction.amount)} spent")
+            val fxCur = transaction.originalCurrency
+            val fxAmt = transaction.originalAmount
+            if (askAboutPayment == null && fxCur != null && fxAmt != null) {
+                // Foreign spend: show what the SMS said, plus the rupee cost.
+                val inr = formatRupeeIndianRaw(transaction.amount)
+                val inrLabel = if (transaction.fxEstimated) "≈ $inr" else "$inr charged"
+                setContentTitle("💸 ${ForeignCurrency.label(fxCur, fxAmt)} spent")
+                setContentText("$inrLabel · ${transaction.merchant} • Split, just me, or ignore")
+                setStyle(
+                    NotificationCompat.BigTextStyle().bigText(
+                        "${ForeignCurrency.label(fxCur, fxAmt)} ($inrLabel) at ${transaction.merchant}\n" +
+                            "Who was this for?"
+                    )
+                )
+                addAction(0, "Split", pendingIntent)
+                addAction(0, "Just me", expenseAction(context, ExpenseActionReceiver.ACTION_JUST_ME, pendingNotificationId))
+                addAction(0, "Ignore", expenseAction(context, ExpenseActionReceiver.ACTION_IGNORE, pendingNotificationId))
+            } else if (askAboutPayment == null) {
+                setContentTitle("💸 ${formatRupeeIndianRaw(transaction.amount)} spent")
                 setContentText("${transaction.merchant} • Split, just me, or ignore")
                 setStyle(
                     NotificationCompat.BigTextStyle().bigText(
-                        "${formatRupeeIndian(transaction.amount)} spent at ${transaction.merchant}\n" +
+                        "${formatRupeeIndianRaw(transaction.amount)} spent at ${transaction.merchant}\n" +
                             "Who was this for?"
                     )
                 )
@@ -112,11 +132,11 @@ fun showExpenseNotification(
                 addAction(0, "Ignore", expenseAction(context, ExpenseActionReceiver.ACTION_IGNORE, pendingNotificationId))
             } else {
                 val payee = askAboutPayment.payeeName ?: askAboutPayment.payeeVpa
-                setContentTitle("${formatRupeeIndian(transaction.amount)} debited. Your Scan & Pay to $payee?")
+                setContentTitle("${formatRupeeIndianRaw(transaction.amount)} debited. Your Scan & Pay to $payee?")
                 setContentText("Not matched automatically. Tap Yes if it was.")
                 setStyle(
                     NotificationCompat.BigTextStyle().bigText(
-                        "Your bank shows a ${formatRupeeIndian(transaction.amount)} debit " +
+                        "Your bank shows a ${formatRupeeIndianRaw(transaction.amount)} debit " +
                             "(${transaction.merchant}). It wasn't matched to your Scan & Pay " +
                             "to $payee automatically because it doesn't clearly name the payee. " +
                             "Was it that payment?"
@@ -198,7 +218,7 @@ fun showPaymentConfirmedNotification(
         != PackageManager.PERMISSION_GRANTED
     ) return
 
-    val amount = formatRupeeIndian(amountMinor / 100.0)
+    val amount = formatRupeeIndianRaw(amountMinor / 100.0)
     val title = if (appSaidFailed) "Money was debited: $amount to $payee" else "Paid $amount to $payee"
     val text = if (appSaidFailed) {
         "Your UPI app said this payment failed, but your bank SMS shows the debit. It's saved as an expense."

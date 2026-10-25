@@ -101,19 +101,34 @@ object SmsIngestion {
             return
         }
         if (parsed.type != "DEBIT") {
+            // Bill payments/refunds change the card limit: remember it so the
+            // next foreign spend's rupee cost is worked out correctly.
+            FxMemory.recordBalance(context, parsed)
+            // Money in: maybe a friend paying you back -> ask to settle up.
+            if (parsed.type == "CREDIT") {
+                try {
+                    AutoSettle.onCredit(context, parsed, body)
+                } catch (e: Exception) {
+                    Log.e(TAG, "auto settle check failed: ${e.javaClass.simpleName}")
+                }
+            }
             Log.i(TAG, "[$who] skipped: ${parsed.type} of Rs ${parsed.amount} (only debits become expenses)")
             note(NotificationAlerts.Outcome.NOT_A_DEBIT, parsed)
             if (fromNotification) NotificationAlerts.noteEvent(context, "Bank message read — not a payment (credit)")
             return
         }
-        val debit = parsed
+        // Remember if this number is a card (chip look on Home) vs an account.
+        AccountKinds.record(context, parsed.bank, parsed.accountIdentifier, body)
 
-        if (isDuplicateSms(context, sender, body, debit)) {
-            Log.i(TAG, "[$who] skipped: already handled (Rs ${debit.amount})")
-            note(NotificationAlerts.Outcome.DUPLICATE, debit)
+        if (isDuplicateSms(context, sender, body, parsed)) {
+            Log.i(TAG, "[$who] skipped: already handled (Rs ${parsed.amount})")
+            note(NotificationAlerts.Outcome.DUPLICATE, parsed)
             if (fromNotification) NotificationAlerts.noteEvent(context, "Payment already added earlier — skipped")
             return
         }
+        // Foreign-currency spend: exact rupee cost from the card limit drop
+        // (or the best estimate). No-op for normal INR debits.
+        val debit = FxMemory.refine(context, parsed)
 
         // Scan & Pay matcher runs FIRST — it now always posts its own
         // "confirmed by bank" notification, so a matched SMS is never silent.
@@ -145,7 +160,10 @@ object SmsIngestion {
                 accountIdentifier = withLocation.accountIdentifier,
                 latitude = withLocation.latitude,
                 longitude = withLocation.longitude,
-                timestampMillis = withLocation.receivedAtMillis
+                timestampMillis = withLocation.receivedAtMillis,
+                originalAmount = withLocation.originalAmount,
+                originalCurrency = withLocation.originalCurrency,
+                fxEstimated = withLocation.fxEstimated
             )
         ).toInt()
 

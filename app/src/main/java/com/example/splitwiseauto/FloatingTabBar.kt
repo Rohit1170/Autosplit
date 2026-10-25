@@ -62,6 +62,9 @@ fun FloatingTabBar(
     val shape = RoundedCornerShape(34.dp)
     val dark = isSystemInDarkTheme()
     val bg = MaterialTheme.colorScheme.background
+    val material = AppThemeStore.isMaterial
+    val flatBar = MaterialTheme.colorScheme.surfaceVariant
+    val capsule = MaterialTheme.colorScheme.secondaryContainer
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -92,22 +95,28 @@ fun FloatingTabBar(
                 // Translucent frosted tint: content shows through.
                 .background(
                     Brush.verticalGradient(
-                        if (dark) listOf(Color(0x8C2A3530), Color(0xA6121915))
-                        else listOf(Color(0xB3FFFFFF), Color(0xC7F1F5F3))
+                        when {
+                            material -> listOf(flatBar, flatBar)
+                            dark -> listOf(Color(0x8C2A3530), Color(0xA6121915))
+                            else -> listOf(Color(0xB3FFFFFF), Color(0xC7F1F5F3))
+                        }
                     )
                 )
                 // Glass sheen on the upper half.
                 .background(
                     Brush.verticalGradient(
-                        0f to Color.White.copy(alpha = if (dark) 0.07f else 0.35f),
+                        0f to Color.White.copy(alpha = if (material) 0f else if (dark) 0.07f else 0.35f),
                         0.5f to Color.Transparent
                     )
                 )
                 .border(
                     1.dp,
                     Brush.verticalGradient(
-                        if (dark) listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.04f))
-                        else listOf(Color.White.copy(alpha = 0.9f), Color.Black.copy(alpha = 0.06f))
+                        when {
+                            material -> listOf(Color.Transparent, Color.Transparent)
+                            dark -> listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.04f))
+                            else -> listOf(Color.White.copy(alpha = 0.9f), Color.Black.copy(alpha = 0.06f))
+                        }
                     ),
                     shape
                 )
@@ -127,13 +136,20 @@ fun FloatingTabBar(
                     .clip(RoundedCornerShape(29.dp))
                     .background(
                         Brush.verticalGradient(
-                            if (dark) listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.07f))
-                            else listOf(Color(0xFF14A87C).copy(alpha = 0.16f), Color(0xFF14A87C).copy(alpha = 0.10f))
+                            when {
+                                material -> listOf(capsule, capsule)
+                                dark -> listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.07f))
+                                else -> listOf(Color(0xFF14A87C).copy(alpha = 0.16f), Color(0xFF14A87C).copy(alpha = 0.10f))
+                            }
                         )
                     )
                     .border(
                         1.dp,
-                        if (dark) Color.White.copy(alpha = 0.12f) else Color(0xFF14A87C).copy(alpha = 0.18f),
+                        when {
+                            material -> Color.Transparent
+                            dark -> Color.White.copy(alpha = 0.12f)
+                            else -> Color(0xFF14A87C).copy(alpha = 0.18f)
+                        },
                         RoundedCornerShape(29.dp)
                     )
             )
@@ -160,9 +176,12 @@ private fun TabBarItem(
 ) {
     val source = remember { MutableInteractionSource() }
     val dark = isSystemInDarkTheme()
-    val on = if (dark) Color.White else Color(0xFF0E1613)
+    val material = AppThemeStore.isMaterial
+    val on = if (material) MaterialTheme.colorScheme.onSurface else if (dark) Color.White else Color(0xFF0E1613)
+    val selectedMaterial = MaterialTheme.colorScheme.onSecondaryContainer
     val tint by animateColorAsState(
         when {
+            selected && material -> selectedMaterial
             selected && !dark -> Color(0xFF0F7F5E)
             selected -> on
             else -> on.copy(alpha = if (dark) 0.6f else 0.55f)

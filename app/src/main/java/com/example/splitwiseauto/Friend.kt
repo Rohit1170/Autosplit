@@ -9,5 +9,8 @@ data class Friend(
     @PrimaryKey(autoGenerate = true)
     val id: Int = 0,
 
-    val name: String
+    val name: String,
+
+    // Digits with country code (919876543210). Used for WhatsApp/SMS reminders.
+    val phone: String? = null
 )

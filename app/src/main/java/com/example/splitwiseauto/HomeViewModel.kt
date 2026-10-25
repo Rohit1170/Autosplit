@@ -17,10 +17,32 @@ data class CategorySummary(
 /** Subtitle of the merged Slice card (payments without an account number). */
 const val SLICE_BANK_LABEL = "UPI payments"
 
+/**
+ * Daily average for the month on the hero card, and the previous month's
+ * daily average to compare with. Lower is better (it's spending).
+ *
+ * RULE: trip expenses are always EXCLUDED from this average (both months).
+ * A trip is short, high spending that would distort a person's everyday
+ * daily average. The card shows an "excl. trips" note for this reason.
+ */
+data class HeroAverage(
+    val perDay: Double,
+    val previousPerDay: Double,
+    /** "Sep" — for the accessibility text. */
+    val previousLabel: String
+) {
+    /** +12.0 = 12% more per day than last month. */
+    val changePercent: Double get() = (perDay - previousPerDay) / previousPerDay * 100.0
+}
+
 data class AccountSpendingSummary(
     val bank: String,
     val accountIdentifier: String?,
-    val total: Double
+    val total: Double,
+    // Manual expenses you paid in cash (shown as one "Cash" card).
+    val isCash: Boolean = false,
+    // The SMS called this number a card (not a bank account).
+    val isCard: Boolean = false
 ) {
     val displayName: String
         get() = if (accountIdentifier == null) {
@@ -50,6 +72,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     val heroTotal: StateFlow<Pair<String, Double>?> = _heroTotal
 
     init {
+        // One-time: learn which saved numbers are cards from the SMS inbox.
+        viewModelScope.launch {
+            val found = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                AccountKinds.backfillOnce(getApplication())
+            }
+            if (found) refresh()
+        }
         // Recompute Home (and so the animated total) the moment expenses
         // change — e.g. "Just me" from the bell or a background SMS — with the
         // trip/filters currently shown, instead of waiting for the next resume.
@@ -92,6 +121,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Reload with the filters last used (after a payment changed category). */
     fun refresh() = loadExpenses(currentTripId, currentDateFilter, currentParticipantFilter, currentSelectedFriendNames)
+
+    // Month view only (not all-time / filtered): avg per day vs last month.
+    private val _heroAverage = MutableStateFlow<HeroAverage?>(null)
+    val heroAverage: StateFlow<HeroAverage?> = _heroAverage
 
     private val _accountSpending = MutableStateFlow<List<AccountSpendingSummary>>(emptyList())
     val accountSpending: StateFlow<List<AccountSpendingSummary>> = _accountSpending
@@ -213,6 +246,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 CategorySummary(category, sum, tilePercents[i])
             }
 
+            // Everyday spending only: trips are excluded from the daily average,
+            // and no average is shown while a trip is selected.
+            _heroAverage.value = if (tripId != null) null
+                else computeHeroAverage(allData.filter { it.expense.tripId == null }, dateFilter, participantFilter, selectedFriendNames)
+
             val today = DayRange.of(now, now)
             val todayItems = tripFiltered.filter { e -> e.expense.timestampMillis?.let { today.contains(it) } == true }
             val yesterday = DayRange.of(now - 86_400_000L, now - 86_400_000L)
@@ -229,7 +267,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
             _accountSpending.value = data
                 .map { it.expense }
-                // Manual cash is intentionally not presented as a bank/card account.
+                // Cash isn't a bank card; it gets its own card below.
                 .filterNot { it.bank.equals("Cash", ignoreCase = true) && it.accountIdentifier == null }
                 // Payments with no card/account number are the Slice app's
                 // UPI payments (any bank) — one "Slice" card, not one per bank.
@@ -241,10 +279,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     AccountSpendingSummary(
                         bank = key.first,
                         accountIdentifier = key.second,
-                        total = expensesForAccount.sumOf { it.amount }
+                        total = expensesForAccount.sumOf { it.amount },
+                        isCard = AccountKinds.isCard(getApplication(), key.first, key.second)
                     )
                 }
                 .sortedByDescending { it.total }
+                .let { cards ->
+                    // Cash you paid yourself (manual "Paid from: Cash") gets
+                    // its own card at the end. Friends' payments aren't yours.
+                    val cash = data
+                        .map { it.expense }
+                        .filter {
+                            it.bank.equals("Cash", ignoreCase = true) && it.accountIdentifier == null &&
+                                it.payer.equals("Me", ignoreCase = true)
+                        }
+                        .sumOf { it.amount }
+                    if (cash > 0.0) cards + AccountSpendingSummary("Cash", null, cash, isCash = true) else cards
+                }
         }
     }
 
@@ -253,6 +304,39 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             db.expenseDao().deleteExpenseWithParticipants(expenseId)
             loadExpenses(currentTripId, currentDateFilter, currentParticipantFilter, currentSelectedFriendNames)
         }
+    }
+
+    /**
+     * This month's spend per day so far (or per day of the whole month, for a
+     * past month) against the previous month's spend per day. Null when the
+     * hero isn't showing a single month, a Home filter narrows the data, or
+     * there's nothing last month to compare with.
+     *
+     * [items] must already have trip expenses removed (see [HeroAverage] RULE).
+     */
+    private fun computeHeroAverage(
+        items: List<ExpenseWithParticipants>,
+        dateFilter: DateFilter,
+        participantFilter: ParticipantFilter,
+        selectedFriendNames: Set<String>
+    ): HeroAverage? {
+        val month = dateFilter.month ?: return null
+        if (participantFilter != ParticipantFilter.ALL || selectedFriendNames.isNotEmpty()) return null
+        val prev = month.previous()
+        fun totalOf(m: MonthKey) = items.sumOf { e ->
+            val t = e.expense.timestampMillis ?: return@sumOf 0.0
+            if (MonthKey.fromMillis(t) == m) e.expense.amount else 0.0
+        }
+        val days = if (month == MonthKey.current())
+            java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH)
+        else month.daysInMonth()
+        val prevTotal = totalOf(prev)
+        if (prevTotal <= 0.0 || days <= 0) return null
+        return HeroAverage(
+            perDay = totalOf(month) / days,
+            previousPerDay = prevTotal / prev.daysInMonth(),
+            previousLabel = prev.shortLabel()
+        )
     }
 }
 

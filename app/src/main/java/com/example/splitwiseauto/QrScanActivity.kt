@@ -273,12 +273,12 @@ class QrScanActivity : ComponentActivity() {
         val billNote = intent.getStringExtra(EXTRA_BILL_NOTE)
 
         setContent {
-            SplitWiseAutoTheme {
+            SplitleeTheme {
                 ScanAndPayFlow(
                     cameraGranted = cameraGranted,
                     cameraDenied = cameraDenied,
                     billLabel = billLabel,
-                    tripName = ActiveTripStore.getActiveTripName(this),
+                    tripName = ActiveTripStore.getRecordingTripName(this),
                     billAmount = billAmount,
                     billNote = billNote,
                     paymentId = inFlightPaymentId,
@@ -1308,7 +1308,7 @@ private fun PaymentReviewScreen(
                     )
                     if (amountFixedByQr) {
                         Text(
-                            text = formatRupeeIndian(request.amount!!),
+                            text = formatRupeeIndianRaw(request.amount!!),
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -1394,6 +1394,24 @@ private fun PaymentReviewScreen(
                 }
             }
 
+            // Heads-up from the QR type (info only; the payment flow is unchanged).
+            val qrKind = remember(request.raw) { request.kind() }
+            val warn = warnColor()
+            val noticeStyle = StatusStyle(Icons.Filled.WarningAmber, warn, warn.copy(alpha = 0.16f), "")
+            when (qrKind) {
+                UpiQrKind.PERSONAL -> NoticeCard(
+                    "This is a personal UPI ID. Most UPI apps block paying people from another app. " +
+                        "If it fails, pay from your UPI app directly; Splitlee will track it from the bank SMS.",
+                    noticeStyle
+                )
+                UpiQrKind.MERCHANT_UNSIGNED -> NoticeCard(
+                    "This shop's QR isn't verified by a payment gateway, so your UPI app may decline it. " +
+                        "If it does, pay from your UPI app directly; Splitlee will track it from the bank SMS.",
+                    noticeStyle
+                )
+                else -> Unit
+            }
+
             // PIN reassurance.
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
@@ -1448,7 +1466,7 @@ private fun PaymentReviewScreen(
                     )
                 } else {
                     Text(
-                        text = amount?.let { "Pay ${formatRupeeIndian(it)}" } ?: "Enter an amount",
+                        text = amount?.let { "Pay ${formatRupeeIndianRaw(it)}" } ?: "Enter an amount",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -1550,7 +1568,7 @@ private fun PaymentStatusScreen(
         val status = current.statusEnum
         val style = statusStyle(status)
         val payee = current.payeeName ?: current.payeeVpa
-        val amountText = formatRupeeIndian(current.amountMinor / 100.0)
+        val amountText = formatRupeeIndianRaw(current.amountMinor / 100.0)
         val appName = upiAppName ?: "your UPI app"
 
         val (title, subtext) = when (status) {

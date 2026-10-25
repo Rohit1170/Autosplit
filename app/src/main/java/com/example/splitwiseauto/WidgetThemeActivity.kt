@@ -56,7 +56,7 @@ class WidgetThemeActivity : ComponentActivity() {
         setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId))
 
         setContent {
-            SplitWiseAutoTheme {
+            SplitleeTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     WidgetThemePicker(onDone = { finish() })
                 }
@@ -103,7 +103,7 @@ private fun WidgetThemePicker(onDone: () -> Unit) {
 @Composable
 private fun ThemeOption(theme: WidgetTheme, selected: Boolean, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
-    val accent = Color(0xFF2FD39A)
+    val accent = Brand.accent()
     val swatch: Brush = when (theme) {
         WidgetTheme.GREEN -> Brush.linearGradient(listOf(Color(0xFF1A2B24), Color(0xFF0E1613)))
         WidgetTheme.CLEAR -> Brush.linearGradient(listOf(Color(0x991A2B24), Color(0x660E1613)))

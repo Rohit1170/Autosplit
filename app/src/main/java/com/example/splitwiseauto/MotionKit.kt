@@ -479,6 +479,14 @@ fun Modifier.modernCard(
     borderColor: Color? = null
 ): Modifier {
     val shape = RoundedCornerShape(radius)
+    // Material You: flat, no sheen or glass edge (focus/selection borders stay).
+    if (AppThemeStore.isMaterial) {
+        val fill = tint?.let { lerpColor(base, it, tintAlpha * 0.7f) } ?: base
+        return this
+            .clip(shape)
+            .background(fill)
+            .then(if (borderColor != null) Modifier.border(1.dp, borderColor, shape) else Modifier)
+    }
     val top = tint?.let { lerpColor(base, it, tintAlpha) } ?: lerpColor(base, Color.White, 0.035f)
     val edge = borderColor ?: (tint ?: Color.White)
     return this

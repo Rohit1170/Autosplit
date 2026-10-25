@@ -87,8 +87,14 @@ class ExpenseConfirmationActivity : ComponentActivity() {
     private var timestampMillis: Long = System.currentTimeMillis()
     private var pendingNotificationId: Int? = null
     private var tripId: Int? = null
+    // Group this split belongs to (kept when editing; picked on the screen).
+    private var groupId: Int? = null
     private var source: String? = null
     private var paymentAttemptId: Int? = null
+    // Foreign-currency spend ("PHP 518.09"); amount stays INR.
+    private var originalAmount: Double? = null
+    private var originalCurrency: String? = null
+    private var fxEstimated: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -134,6 +140,9 @@ class ExpenseConfirmationActivity : ComponentActivity() {
         pendingNotificationId = intent.getIntExtra("pendingNotificationId", -1).takeIf { it >= 0 }
         source = intent.getStringExtra("source")
         paymentAttemptId = intent.getIntExtra("paymentAttemptId", -1).takeIf { it >= 0 }
+        originalAmount = if (intent.hasExtra("originalAmount")) intent.getDoubleExtra("originalAmount", 0.0) else null
+        originalCurrency = intent.getStringExtra("originalCurrency")
+        fxEstimated = intent.getBooleanExtra("fxEstimated", false)
 
         if (editingExpenseId != null) {
             lifecycleScope.launch {
@@ -146,6 +155,7 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                 // so the saved lat/long always wins over anything passed in.
                 val original = database.expenseDao().getExpenseById(editingExpenseId!!)
                 tripId = original?.tripId
+                groupId = original?.groupId
                 latitude = original?.latitude
                 longitude = original?.longitude
 
@@ -155,9 +165,9 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                 showExpenseConfirmation(savedAmounts)
             }
         } else {
-            // New expense: tag it with whichever trip is currently active
-            // ("Main" mode == null, so nothing changes there).
-            tripId = ActiveTripStore.getActiveTripId(this)
+            // New expense: tag it with the active trip — unless that trip is
+            // closed (then it goes to Main). "Main" mode == null.
+            tripId = ActiveTripStore.getRecordingTripId(this)
             showExpenseConfirmation(emptyMap())
         }
     }
@@ -169,7 +179,7 @@ class ExpenseConfirmationActivity : ComponentActivity() {
     private fun showExpenseConfirmation(initialSelectedAmounts: Map<String, Double>) {
         setContent {
 
-            SplitWiseAutoTheme {
+            SplitleeTheme {
 
                 androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
                 Surface(
@@ -183,11 +193,12 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                         date = date,
                         friends = database.friendDao(),
                         initialSelectedAmounts = initialSelectedAmounts,
+                        initialGroupId = groupId,
                         isScanPay = source == "scan_pay",
                         // Quick outcomes only for a NEW detected expense, not when editing.
                         showQuickActions = editingExpenseId == null,
-                        onSave = { selectedAmounts ->
-
+                        onSave = { selectedAmounts, pickedGroupId ->
+                            groupId = pickedGroupId
                             saveExpense(
                                 selectedAmounts
                             )
@@ -252,11 +263,17 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                         longitude = longitude,
                         timestampMillis = timestampMillis,
                         tripId = tripId,
-                        paymentAttemptId = paymentAttemptId
+                        paymentAttemptId = paymentAttemptId,
+                        groupId = groupId,
+                        originalAmount = originalAmount,
+                        originalCurrency = originalCurrency,
+                        fxEstimated = fxEstimated
                     )
                 ).toInt()
 
             if (editingExpenseId != null) {
+                // Keep the foreign-currency details of the expense being edited.
+                val existing = database.expenseDao().getExpenseById(expenseId)
                 database.expenseDao().updateExpense(
                     Expense(
                         id = expenseId,
@@ -272,7 +289,11 @@ class ExpenseConfirmationActivity : ComponentActivity() {
                         longitude = longitude,
                         timestampMillis = timestampMillis,
                         tripId = tripId,
-                        paymentAttemptId = paymentAttemptId
+                        paymentAttemptId = paymentAttemptId,
+                        groupId = groupId,
+                        originalAmount = existing?.originalAmount,
+                        originalCurrency = existing?.originalCurrency,
+                        fxEstimated = existing?.fxEstimated ?: false
                     )
                 )
                 database.expenseDao().deleteParticipantsForExpense(expenseId)
@@ -357,9 +378,10 @@ private fun ExpenseConfirmationScreen(
     date: String,
     friends: FriendDao,
     initialSelectedAmounts: Map<String, Double>,
+    initialGroupId: Int? = null,
     isScanPay: Boolean = false,
     showQuickActions: Boolean = false,
-    onSave: (Map<String, Double>) -> Unit,
+    onSave: (Map<String, Double>, Int?) -> Unit,
     onJustMe: () -> Unit = {},
     onCancel: () -> Unit
 ) {
@@ -399,6 +421,11 @@ private fun ExpenseConfirmationScreen(
     // would otherwise insert the same expense twice.
     var saving by remember { mutableStateOf(false) }
 
+    // Groups: picking one selects you + its members (equal split).
+    val groupContext = androidx.compose.ui.platform.LocalContext.current
+    var groups by remember { mutableStateOf<List<GroupWithMembers>>(emptyList()) }
+    var selectedGroupId by remember { mutableStateOf(initialGroupId) }
+
     /*
      * Load friends.
      */
@@ -406,18 +433,19 @@ private fun ExpenseConfirmationScreen(
 
         friendList =
             friends.getAllFriends()
+        groups = loadGroups(AppDatabase.getDatabase(groupContext))
     }
 
     if (showAddFriendDialog) {
         AddFriendDialog(
             onDismiss = { showAddFriendDialog = false },
-            onAddFriend = { name ->
+            onAddFriendWithPhone = { name, phone ->
                 coroutineScope.launch {
                     if (
                         !name.equals("Me", ignoreCase = true) &&
                         friends.getFriendByName(name) == null
                     ) {
-                        friends.insertFriend(Friend(name = name))
+                        friends.insertFriend(Friend(name = name, phone = phone))
                     }
 
                     friendList = friends.getAllFriends()
@@ -645,6 +673,35 @@ private fun ExpenseConfirmationScreen(
                 }
             }
 
+            if (groups.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "Split with a group",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                GroupChipsRow(
+                    groups = groups,
+                    selectedGroupId = selectedGroupId,
+                    onPick = { picked ->
+                        selectedGroupId = picked?.group?.id
+                        if (picked != null) {
+                            // You + the group's members (by saved friend name), equal split.
+                            val known = friendList.map { it.name }
+                            selectedPeople.clear()
+                            selectedPeople.add("Me")
+                            picked.members.forEach { m ->
+                                val name = known.firstOrNull { it.equals(m, ignoreCase = true) } ?: return@forEach
+                                if (!selectedPeople.contains(name)) selectedPeople.add(name)
+                            }
+                            manualAmounts.clear()
+                            hasEditedSplit = true
+                        }
+                    }
+                )
+            }
+
             Spacer(modifier = Modifier.height(14.dp))
             Text(
                 text = "Who was this for?",
@@ -822,7 +879,7 @@ private fun ExpenseConfirmationScreen(
                 onClick = {
                     if (!saving && selectedPeople.isNotEmpty() && abs(remaining) < 0.01) {
                         saving = true
-                        onSave(amounts)
+                        onSave(amounts, selectedGroupId)
                     }
                 },
                 enabled = !saving && selectedPeople.isNotEmpty() && abs(remaining) < 0.01,
@@ -1003,10 +1060,16 @@ private fun ParticipantTile(
 
 
             /*
-             * Circular check.
+             * Circular check. When selected it lines up with the amount
+             * field (58dp tall → 13dp above its bottom edge) instead of the
+             * whole card, which left it floating above the field.
              */
             Box(
                 modifier = Modifier
+                    .then(
+                        if (selected) Modifier.align(Alignment.Bottom).padding(bottom = 13.dp)
+                        else Modifier
+                    )
                     .size(32.dp)
                     .clip(CircleShape)
                     .background(
@@ -1038,11 +1101,13 @@ private fun ParticipantTile(
                         Modifier.size(20.dp)
                     )
                 } else {
-                    Text(
-                        text = "+",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium
+                    // Icon, not a "+" glyph: font metrics pushed the text
+                    // off-centre inside the circle.
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "Select",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }

@@ -14,6 +14,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyRow
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Dialog
@@ -62,6 +64,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.border
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.Spring
@@ -73,6 +80,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -111,6 +119,7 @@ fun HomeScreen(
     val totalOwedToYou by friendViewModel.totalOwedToYou.collectAsState()
     val categories by homeViewModel.categorySummaries.collectAsState()
     val todayCategories by homeViewModel.todayCategories.collectAsState()
+    val heroAverage by homeViewModel.heroAverage.collectAsState()
     var todayDrill by remember { mutableStateOf<CategorySummary?>(null) }
     todayDrill?.let { summary ->
         val data = remember(summary, todayCategories) { homeViewModel.todayDrill(summary) }
@@ -126,6 +135,7 @@ fun HomeScreen(
     val accountSpending by homeViewModel.accountSpending.collectAsState()
     val mapExpenses by mapViewModel.expensesWithLocation.collectAsState()
     val mapLoaded by mapViewModel.loaded.collectAsState()
+    val mapLoadedFor by mapViewModel.loadedFor.collectAsState()
     val pendingNotifications by pendingNotificationsViewModel.pending.collectAsState()
     val recentPayments by pendingNotificationsViewModel.payments.collectAsState()
     val settlementHistory by friendViewModel.settlementHistory.collectAsState()
@@ -135,6 +145,7 @@ fun HomeScreen(
     var showPendingNotifications by remember {
         mutableStateOf(false)
     }
+    var friendForTrends by remember { mutableStateOf<Friend?>(null) }
     var expenseForActions by remember { mutableStateOf<ExpenseWithParticipants?>(null) }
     var friendForActions by remember { mutableStateOf<Friend?>(null) }
     var friendToSettle by remember { mutableStateOf<Friend?>(null) }
@@ -184,7 +195,7 @@ fun HomeScreen(
     }
     LaunchedEffect(expenses) {
         friendViewModel.refresh()
-        mapViewModel.loadExpenses()
+        mapViewModel.loadExpenses(activeTripId)
         insightsViewModel.loadExpenses(activeTripId)
         pendingNotificationsViewModel.refresh()
     }
@@ -192,15 +203,23 @@ fun HomeScreen(
     // same trip-scoped data Home already shows — Insights, Map and Friends
     // are unaffected by it.
     LaunchedEffect(activeTripId, dateFilter, participantFilter, selectedFriendNames) {
-        homeViewModel.loadExpenses(activeTripId, dateFilter, participantFilter, selectedFriendNames)
+        homeViewModel.loadExpenses(activeTripId, if (activeTripId != null) DateFilter() else dateFilter, participantFilter, selectedFriendNames)
         insightsViewModel.loadExpenses(activeTripId)
+        mapViewModel.loadExpenses(activeTripId)
     }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                homeViewModel.loadExpenses(activeTripId, dateFilter, participantFilter, selectedFriendNames)
+                // Manage trips (Settings) may have closed, hidden, deleted or
+                // opened a trip: reload and follow the stored selection.
+                coroutineScope.launch {
+                    trips = AppDatabase.getDatabase(context).tripDao().getAll()
+                    activeTripId = ActiveTripStore.getActiveTripId(context)
+                    activeTripName = ActiveTripStore.getActiveTripName(context)
+                }
+                homeViewModel.loadExpenses(activeTripId, if (activeTripId != null) DateFilter() else dateFilter, participantFilter, selectedFriendNames)
                 friendViewModel.refresh()
-                mapViewModel.loadExpenses()
+                mapViewModel.loadExpenses(activeTripId)
                 insightsViewModel.loadExpenses(activeTripId)
                 pendingNotificationsViewModel.refresh()
             }
@@ -234,8 +253,8 @@ fun HomeScreen(
             onDismiss = {
                 showAddFriendDialog = false
             },
-            onAddFriend = { name ->
-                friendViewModel.addFriend(name)
+            onAddFriendWithPhone = { name, phone ->
+                friendViewModel.addFriend(name, phone)
                 showAddFriendDialog = false
             }
         )
@@ -269,7 +288,16 @@ fun HomeScreen(
                 homeViewModel.deleteExpense(item.expense.id)
                 expenseForActions = null
             },
-            onDismiss = { expenseForActions = null }
+            onDismiss = { expenseForActions = null },
+            onMoveToMain = if (item.expense.tripId != null) {
+                {
+                    expenseForActions = null
+                    coroutineScope.launch {
+                        AppDatabase.getDatabase(context).expenseDao().setTrip(item.expense.id, null)
+                        homeViewModel.refresh()
+                    }
+                }
+            } else null
         )
     }
     friendForActions?.let { friend ->
@@ -293,7 +321,18 @@ fun HomeScreen(
                 friendViewModel.removeFriend(friend)
                 friendForActions = null
             },
-            onDismiss = { friendForActions = null }
+            onDismiss = { friendForActions = null },
+            onTrends = {
+                friendForTrends = friend
+                friendForActions = null
+            }
+        )
+    }
+    friendForTrends?.let { friend ->
+        FriendTrendsSheet(
+            friend = friend,
+            balance = friendBalances[friend.id] ?: FriendBalance(),
+            onDismiss = { friendForTrends = null }
         )
     }
     friendToSettle?.let { friend ->
@@ -311,6 +350,12 @@ fun HomeScreen(
             onDismiss = { friendToRename = null },
             onRename = { newName ->
                 friendViewModel.renameFriend(friend, newName)
+                friendToRename = null
+            },
+            currentPhone = friend.phone,
+            onSave = { newName, phone ->
+                friendViewModel.renameFriend(friend, newName)
+                friendViewModel.setPhone(friend, phone)
                 friendToRename = null
             }
         )
@@ -371,7 +416,7 @@ fun HomeScreen(
                         activeTripName = null
                         ActiveTripStore.setActiveTrip(context, null, null)
                     }
-                    homeViewModel.loadExpenses(activeTripId, dateFilter, participantFilter, selectedFriendNames)
+                    homeViewModel.loadExpenses(activeTripId, if (activeTripId != null) DateFilter() else dateFilter, participantFilter, selectedFriendNames)
                     insightsViewModel.loadExpenses(activeTripId)
                 }
             }
@@ -449,6 +494,22 @@ fun HomeScreen(
             }
         )
     }
+    // Trip mode: the trip being viewed, and friend balances from ITS splits
+    // only (settle-ups applied oldest-first, same as the per-expense status).
+    val activeTrip = trips.firstOrNull { it.id == activeTripId }
+    val tripBalances: Map<Int, FriendBalance>? = remember(activeTripId, expenses, expenseSettlement, friends) {
+        if (activeTripId == null) null
+        else tripFriendBalances(expenses.filter { it.expense.tripId == activeTripId }, expenseSettlement, friends)
+    }
+    val shownBalances = tripBalances ?: friendBalances
+    // A past month on Home: that month's splits (owed to you) and how much
+    // of it has been settled since — not today's overall balances.
+    val pastMonth = dateFilter.month?.takeIf { activeTripId == null && it != MonthKey.current() }
+    val pastMonthSplits: PastMonthSplits? = remember(pastMonth, expenses, expenseSettlement) {
+        pastMonth?.let { m -> pastMonthSplits(m.shortLabel(), expenses, expenseSettlement) }
+    }
+    val shownOwedToYou = if (tripBalances != null) tripBalances.values.sumOf { it.netAmount.coerceAtLeast(0.0) } else totalOwedToYou
+
     Scaffold(
         bottomBar = {
             // Floating glass pill; the selection capsule follows the pager.
@@ -495,43 +556,23 @@ fun HomeScreen(
         }
     ) { paddingValues ->
 
-        // Mode chip (Main/Trip switcher) + bell live in a real header row now,
-        // not a floating overlay — that overlay used to sit on top of
-        // whichever tab was showing (including Home's own hero card), which
-        // is what caused it to visually collide with the hero card and, at
-        // some sizes, with itself. Giving it its own row here means it
-        // occupies real, reserved space above the pager, so nothing below it
-        // can ever be drawn underneath it again.
-        Column(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Only the TOP inset from Scaffold's paddingValues
-                    // belongs here (status bar / cutout clearance). The
-                    // full PaddingValues also carries the bottomBar's
-                    // reserved height in its bottom side — applying that
-                    // to this small header row (via .padding(paddingValues))
-                    // was adding a large, unwanted gap below the row,
-                    // before the hero card even though this row has
-                    // nothing to do with the bottom nav bar.
-                    .padding(top = paddingValues.calculateTopPadding())
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                val chipView = androidx.compose.ui.platform.LocalView.current
-                // Period chip (left); trip chip + bell stay on the right.: "Oct ▾" / "All time ▾". All time is pinned on
-                // top of the menu, then months newest first.
+        // Period chip lives in the hero card now (passed down to HomeTabContent).
+        val periodChip: @Composable () -> Unit = {
+            val chipView = androidx.compose.ui.platform.LocalView.current
+                // Period chip, now inside the hero card (top-right): "Oct ▾" /
+                // "All time ▾". All time is pinned on top of the menu, then
+                // months newest first.
                 Box {
+                    // Frosted pill on the mint card; dark ink like the card's label.
                     Surface(
                         onClick = { Haptics.tap(chipView); showMonthMenu = true },
                         shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.surfaceVariant
+                        color = Color.White.copy(alpha = 0.22f),
+                        contentColor = HomeTokens.onAccent(),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.38f))
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
@@ -543,7 +584,8 @@ fun HomeScreen(
                             Text(
                                 text = dateFilter.month?.let { periodChipLabel(it) }
                                     ?: if (dateFilter.isActive) "Custom" else "All time",
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
                                 maxLines = 1
                             )
                             Icon(
@@ -584,8 +626,37 @@ fun HomeScreen(
                         }
                     }
                 }
-                Spacer(modifier = Modifier.weight(1f))
-                // Trip / mode chip: same glass dropdown as the month chip.
+        }
+
+        // Mode chip (Main/Trip switcher) + bell live in a real header row now,
+        // not a floating overlay — that overlay used to sit on top of
+        // whichever tab was showing (including Home's own hero card), which
+        // is what caused it to visually collide with the hero card and, at
+        // some sizes, with itself. Giving it its own row here means it
+        // occupies real, reserved space above the pager, so nothing below it
+        // can ever be drawn underneath it again.
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Only the TOP inset from Scaffold's paddingValues
+                    // belongs here (status bar / cutout clearance). The
+                    // full PaddingValues also carries the bottomBar's
+                    // reserved height in its bottom side — applying that
+                    // to this small header row (via .padding(paddingValues))
+                    // was adding a large, unwanted gap below the row,
+                    // before the hero card even though this row has
+                    // nothing to do with the bottom nav bar.
+                    .padding(top = paddingValues.calculateTopPadding())
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                val chipView = androidx.compose.ui.platform.LocalView.current
+                val headerView = chipView
+                // Trip / mode chip (left): glass dropdown.
                 Box {
                     Surface(
                         onClick = { Haptics.tap(chipView); showTripPicker = true },
@@ -632,20 +703,27 @@ fun HomeScreen(
                                 showTripPicker = false
                             }
                         )
-                        if (trips.isNotEmpty()) {
+                        // Open trips (deletable here); closed ones under "Past
+                        // trips" (view only — delete/close/hide live in
+                        // Settings > Manage trips). Hidden trips never show.
+                        val openTrips = trips.filter { !it.hidden && !it.isClosed }
+                        val pastTrips = trips.filter { !it.hidden && it.isClosed }
+                            .sortedByDescending { it.rangeEnd ?: it.rangeStart }
+                        if (openTrips.isNotEmpty()) {
                             GlassMenuDivider()
                             GlassMenuHeader("Trips")
                         }
-                        trips.forEach { trip ->
+                        openTrips.forEach { trip ->
                             GlassMenuItem(
                                 label = trip.name,
+                                caption = trip.dateRangeLabel(),
                                 selected = activeTripId == trip.id,
                                 accent = HomeTokens.accent(),
                                 leadingIcon = Icons.Filled.Place,
                                 onClick = {
                                     activeTripId = trip.id
                                     activeTripName = trip.name
-                                    ActiveTripStore.setActiveTrip(context, trip.id, trip.name)
+                                    ActiveTripStore.setActiveTrip(context, trip.id, trip.name, closed = false)
                                     showTripPicker = false
                                 },
                                 trailing = {
@@ -670,6 +748,37 @@ fun HomeScreen(
                                 }
                             )
                         }
+                        if (pastTrips.isNotEmpty()) {
+                            GlassMenuDivider()
+                            GlassMenuHeader("Past trips")
+                        }
+                        pastTrips.take(3).forEach { trip ->
+                            GlassMenuItem(
+                                label = trip.name,
+                                caption = trip.dateRangeLabel() + " · Closed",
+                                selected = activeTripId == trip.id,
+                                accent = HomeTokens.accent(),
+                                leadingIcon = Icons.Filled.Place,
+                                onClick = {
+                                    activeTripId = trip.id
+                                    activeTripName = trip.name
+                                    ActiveTripStore.setActiveTrip(context, trip.id, trip.name, closed = true)
+                                    showTripPicker = false
+                                }
+                            )
+                        }
+                        if (trips.isNotEmpty()) {
+                            GlassMenuDivider()
+                            GlassMenuAction(
+                                label = "All trips",
+                                accent = HomeTokens.accent(),
+                                icon = Icons.Filled.Search,
+                                onClick = {
+                                    showTripPicker = false
+                                    context.startActivity(Intent(context, ManageTripsActivity::class.java))
+                                }
+                            )
+                        }
                         GlassMenuDivider()
                         GlassMenuAction(
                             label = "New trip",
@@ -682,6 +791,8 @@ fun HomeScreen(
                         )
                     }
                 }
+
+                Spacer(modifier = Modifier.weight(1f))
 
                 // The badge wraps the whole round button (not the icon inside
                 // it): inside, the circle's clip cut the badge off.
@@ -712,6 +823,26 @@ fun HomeScreen(
                                 contentDescription = if (attentionCount > 0) "Missed expenses, $attentionCount" else "Missed expenses"
                             )
                         }
+                    }
+                }
+
+                // Settings (widget theme, app info).
+                Surface(
+                    onClick = {
+                        Haptics.tap(headerView)
+                        context.startActivity(Intent(context, SettingsActivity::class.java))
+                    },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Box(
+                        modifier = Modifier.padding(8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Settings,
+                            contentDescription = "Settings"
+                        )
                     }
                 }
             }
@@ -750,16 +881,21 @@ fun HomeScreen(
                             heroTotal = heroTotal,
                             categories = categories,
                             todayCategories = todayCategories,
+                            heroAverage = heroAverage,
+                            periodChip = periodChip,
+                            trip = activeTrip,
+                            pastMonthSplits = pastMonthSplits,
                             onTodayCategoryClick = { todayDrill = it },
                             accountSpending = accountSpending,
                             // Derived here, not in the ViewModel — FriendViewModel already
                             // exposes totalOwedToYou; "you owe" is the same aggregation
                             // (negative netAmount side) computed from the same balances
                             // map HomeScreen already collects, so no new state/DAO query.
-                            owedToYou = totalOwedToYou,
-                            youOwe = friendBalances.values.sumOf { (-it.netAmount).coerceAtLeast(0.0) },
+                            owedToYou = shownOwedToYou,
+                            youOwe = shownBalances.values.sumOf { (-it.netAmount).coerceAtLeast(0.0) },
                             onSeeFriends = { goToTab(1) },
-                            dateFilter = dateFilter,
+                            // A trip shows all of its days (no month filter).
+                            dateFilter = if (activeTripId != null) DateFilter() else dateFilter,
                             participantFilter = participantFilter,
                             selectedFriendNames = selectedFriendNames,
                             onExpenseTap = { item ->
@@ -781,10 +917,14 @@ fun HomeScreen(
 
                     1 -> {
                         FriendsTabContent(
-                            friends = friends,
-                            balances = friendBalances,
+                            // Trip mode: only people split with on this trip.
+                            friends = if (tripBalances != null) friends.filter { it.id in tripBalances.keys } else friends,
+                            balances = shownBalances,
                             mySpent = mySpent,
-                            totalOwedToYou = totalOwedToYou,
+                            totalOwedToYou = shownOwedToYou,
+                            tripLabel = activeTrip?.let { "${it.name} · ${it.dateRangeLabel()}" },
+                            settlement = expenseSettlement,
+                            onFriendTap = { friendForTrends = it },
                             onFriendLongPress = { friendForActions = it },
                             // Double-tap is the fast path straight to settling up;
                             // long-press keeps the full menu (settle/history/rename/remove).
@@ -796,11 +936,16 @@ fun HomeScreen(
                     }
 
                     2 -> {
+                        // The map runs under the floating tab bar (no bottom
+                        // padding); its own overlays stay above the bar.
                         ExpenseMapScreen(
                             expenses = mapExpenses,
                             active = pagerState.currentPage == 2,
                             loaded = mapLoaded,
-                            modifier = tabPageModifier
+                            modifier = Modifier,
+                            tripId = activeTripId,
+                            bottomInset = barInset,
+                            dataReady = mapLoadedFor == activeTripId
                         )
                     }
 
@@ -826,6 +971,10 @@ private fun HomeTabContent(
     heroTotal: Pair<String, Double>?,
     categories: List<CategorySummary>,
     todayCategories: List<CategorySummary> = emptyList(),
+    heroAverage: HeroAverage? = null,
+    periodChip: (@Composable () -> Unit)? = null,
+    trip: Trip? = null,
+    pastMonthSplits: PastMonthSplits? = null,
     onTodayCategoryClick: (CategorySummary) -> Unit = {},
     accountSpending: List<AccountSpendingSummary>,
     owedToYou: Double,
@@ -919,6 +1068,10 @@ private fun HomeTabContent(
     val categoriesRiseProgress = remember { Animatable(1f) }
     val expensesRiseProgress = remember { Animatable(1f) }
 
+    val heroChip: (@Composable () -> Unit)? = if (trip != null) {
+        { TripDatesChip(trip) }
+    } else periodChip
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -938,14 +1091,20 @@ private fun HomeTabContent(
         item {
             HomeHeroCard(
                 label = when {
+                    trip != null && filterActive -> "TRIP TOTAL (${filterLabel.uppercase()})"
+                    trip != null -> if (trip.isClosed) "TRIP TOTAL · CLOSED" else "TRIP TOTAL"
                     filterActive -> "TOTAL (${filterLabel.uppercase()})"
-                    dateFilter.month == MonthKey.current() -> "THIS MONTH · ${dateFilter.month.shortLabel().uppercase()}"
+                    // Month name is on the period chip beside it now.
+                    dateFilter.month == MonthKey.current() -> "THIS MONTH"
                     dateFilter.month != null -> "${dateFilter.month.displayLabel().uppercase()} EXPENSES"
                     else -> "ALL-TIME EXPENSES"
                 },
                 amount = heroTotal?.second ?: total,
                 counterKey = heroTotal?.first,
                 animateEntrance = playEntrance,
+                average = heroAverage,
+                // Trip: its dates instead of the month picker.
+                periodChip = heroChip,
                 modifier = Modifier.entranceRiseFade { heroRiseProgress.value }
             )
             Spacer(modifier = Modifier.height(14.dp))
@@ -955,7 +1114,44 @@ private fun HomeTabContent(
         // FriendViewModel's balances; this just surfaces them on Home so
         // there's no need to switch tabs to see where you stand. Tapping
         // either chip jumps straight to the Friends tab.
-        if (owedToYou > 0.01 || youOwe > 0.01) {
+        if (pastMonthSplits != null) {
+            if (pastMonthSplits.owed > 0.01 || pastMonthSplits.youOwed > 0.01) item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    BalanceChip(
+                        modifier = Modifier.weight(1f),
+                        label = "Owed to you · ${pastMonthSplits.label}",
+                        amount = pastMonthSplits.owed,
+                        icon = Icons.Filled.ArrowDownward,
+                        color = HomeTokens.accent(),
+                        onClick = onSeeFriends
+                    )
+                    BalanceChip(
+                        modifier = Modifier.weight(1f),
+                        label = "Settled up",
+                        amount = pastMonthSplits.settled,
+                        icon = Icons.Filled.Check,
+                        color = HomeTokens.accent(),
+                        onClick = onSeeFriends
+                    )
+                }
+                Text(
+                    text = when {
+                        pastMonthSplits.owed - pastMonthSplits.settled > 0.01 ->
+                            "${formatRupeeIndian(pastMonthSplits.owed - pastMonthSplits.settled)} from ${pastMonthSplits.label} still open"
+                        pastMonthSplits.owed > 0.01 -> "Everything from ${pastMonthSplits.label} is settled"
+                        else -> ""
+                    } + if (pastMonthSplits.youOwed > 0.01)
+                        "${if (pastMonthSplits.owed > 0.01) " · " else ""}you owed ${formatRupeeIndian(pastMonthSplits.youOwed)}" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = HomeTokens.mut(),
+                    modifier = Modifier.padding(start = 4.dp, top = 6.dp)
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+            }
+        } else if (owedToYou > 0.01 || youOwe > 0.01) {
             item {
                 Row(
                     modifier = Modifier
@@ -992,7 +1188,11 @@ private fun HomeTabContent(
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(modifier = Modifier.height(10.dp))
-                    LazyRow(
+                    // Hide amounts: all cards fold into one plain stack, so
+                    // banks, numbers and even how many cards you have stay hidden.
+                    if (AmountPrivacy.hidden.value) {
+                        HiddenAccountsPile()
+                    } else LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.consumeHorizontalOverscroll()
                     ) {
@@ -1020,13 +1220,30 @@ private fun HomeTabContent(
             item {
                 Column(modifier = Modifier.entranceRiseFade { categoriesRiseProgress.value }) {
                     // Today only: the month-by-category view lives on Insights.
-                    CategoryDonutCard(
-                        items = todayCategories,
-                        periodLabel = "Today",
-                        title = "Today by category",
-                        emptyText = "Nothing spent yet today",
-                        onItemClick = onTodayCategoryClick
-                    )
+                    // A closed trip has no "today": show the whole trip instead.
+                    if (pastMonthSplits != null) {
+                        CategoryDonutCard(
+                            items = categories,
+                            periodLabel = pastMonthSplits.label,
+                            title = "${dateFilter.month?.displayLabel() ?: pastMonthSplits.label} by category",
+                            emptyText = "Nothing spent that month"
+                        )
+                    } else if (trip != null && trip.isClosed) {
+                        CategoryDonutCard(
+                            items = categories,
+                            periodLabel = trip.dateRangeLabel(),
+                            title = "Trip by category",
+                            emptyText = "No expenses in this trip"
+                        )
+                    } else {
+                        CategoryDonutCard(
+                            items = todayCategories,
+                            periodLabel = "Today",
+                            title = "Today by category",
+                            emptyText = "Nothing spent yet today",
+                            onItemClick = onTodayCategoryClick
+                        )
+                    }
 
                     Spacer(
                         modifier = Modifier.height(20.dp)
@@ -1361,15 +1578,18 @@ private fun Modifier.entranceRiseFade(progress: () -> Float): Modifier {
 }
 
 private object HomeTokens {
-    @Composable fun accent(): Color = if (isSystemInDarkTheme()) Color(0xFF2FD39A) else Color(0xFF14A87C)
-    @Composable fun accentSoft(): Color = if (isSystemInDarkTheme()) Color(0xFF2FD39A).copy(alpha = 0.13f) else Color(0xFF14A87C).copy(alpha = 0.12f)
+    // Accent follows Settings > Appearance (mint, or wallpaper colours).
+    @Composable fun accent(): Color = Brand.accent()
+    @Composable fun accentSoft(): Color = Brand.accent().copy(alpha = if (isSystemInDarkTheme()) 0.13f else 0.12f)
     @Composable fun warn(): Color = Color(0xFFF0A63C)
-    @Composable fun card2(): Color = if (isSystemInDarkTheme()) Color(0xFF1A201E) else Color(0xFFE8EFEA)
-    @Composable fun line(): Color = if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color(0xFF12201A).copy(alpha = 0.10f)
-    @Composable fun mut(): Color = if (isSystemInDarkTheme()) Color(0xFF8E9A95) else Color(0xFF5F6E66)
+    @Composable fun card2(): Color = Brand.card2(if (isSystemInDarkTheme()) Color(0xFF1A201E) else Color(0xFFE8EFEA))
+    @Composable fun line(): Color = Brand.line(if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color(0xFF12201A).copy(alpha = 0.10f))
+    @Composable fun mut(): Color = Brand.muted(if (isSystemInDarkTheme()) Color(0xFF8E9A95) else Color(0xFF5F6E66))
     // Text on the solid accent hero card — the teal is bright enough in
     // both modes that dark text reads better than white.
-    @Composable fun onAccent(): Color = Color(0xFF06231A)
+    // Material You: hero uses primaryContainer, so its text uses the matching "on" colour.
+    @Composable fun onAccent(): Color =
+        if (AppThemeStore.isMaterial) MaterialTheme.colorScheme.onPrimaryContainer else Brand.onAccent()
 }
 
 /**
@@ -1398,7 +1618,13 @@ fun expenseTimeLabel(timestampMillis: Long?): String? {
 fun expenseDateTimeLabel(date: String, timestampMillis: Long?): String =
     expenseTimeLabel(timestampMillis)?.let { "$date · $it" } ?: date
 
-fun formatRupeeIndian(amount: Double): String {
+fun formatRupeeIndian(amount: Double): String =
+    // "Hide amounts" (Settings) masks every displayed amount. Reading the
+    // Compose state here makes screens recompose when it's toggled.
+    if (AmountPrivacy.hidden.value) AmountPrivacy.MASK else formatRupeeIndianRaw(amount)
+
+/** Real amount regardless of "Hide amounts" (payments, notifications). */
+fun formatRupeeIndianRaw(amount: Double): String {
     val rounded = kotlin.math.round(amount * 100) / 100.0
     val nf = NumberFormat.getNumberInstance(Locale("en", "IN"))
     return if (rounded == kotlin.math.floor(rounded)) {
@@ -1418,6 +1644,10 @@ fun formatRupeeIndian(amount: Double): String {
 fun formatRupeeIndian(amount: String): String =
     amount.replace(",", "").trim().toDoubleOrNull()?.let { formatRupeeIndian(it) } ?: "₹$amount"
 
+/** String version of [formatRupeeIndianRaw] (SMS amounts arrive as text). */
+fun formatRupeeIndianRaw(amount: String): String =
+    amount.replace(",", "").trim().toDoubleOrNull()?.let { formatRupeeIndianRaw(it) } ?: "₹$amount"
+
 @Suppress("UNUSED_PARAMETER") // animateEntrance kept so callers don't change
 @Composable
 private fun HomeHeroCard(
@@ -1426,9 +1656,12 @@ private fun HomeHeroCard(
     // Which total this is (trip + filters); null = not loaded yet.
     counterKey: String?,
     animateEntrance: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    average: HeroAverage? = null,
+    periodChip: (@Composable () -> Unit)? = null
 ) {
-    val accent = HomeTokens.accent()
+    // Material You: tonal wallpaper colour (like Google apps), not the bright primary.
+    val accent = if (AppThemeStore.isMaterial) MaterialTheme.colorScheme.primaryContainer else HomeTokens.accent()
 
     // No count-up animation — the amount just shows immediately, including
     // on the app's first open (animateEntrance is now unused but kept as a
@@ -1440,20 +1673,24 @@ private fun HomeHeroCard(
             .clip(RoundedCornerShape(24.dp))
             .background(
                 Brush.linearGradient(
-                    listOf(accent, accent.copy(alpha = 0.78f))
+                    listOf(accent, if (AppThemeStore.isMaterial) accent else accent.copy(alpha = 0.78f))
                 )
             )
-            .padding(horizontal = 20.dp, vertical = 22.dp)
+            .padding(start = 20.dp, end = 14.dp, top = 14.dp, bottom = 20.dp)
     ) {
         Column {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = HomeTokens.onAccent().copy(alpha = 0.72f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = HomeTokens.onAccent().copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                periodChip?.invoke()
+            }
             Spacer(modifier = Modifier.height(6.dp))
             // Counts from the last total you saw to the current one (only
             // when it changed); see ExpenseCounter.kt.
@@ -1465,7 +1702,75 @@ private fun HomeHeroCard(
                 color = HomeTokens.onAccent(),
                 deltaColor = HomeTokens.onAccent().copy(alpha = 0.72f)
             )
+            // Daily average sits under the total (the top-right is the
+            // period chip now). Trips are left out (see HeroAverage).
+            average?.let {
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    HeroAverageChip(it)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        "excl. trips",
+                        fontSize = 11.sp,
+                        color = HomeTokens.onAccent().copy(alpha = 0.6f)
+                    )
+                }
+            }
         }
+    }
+}
+
+/**
+ * Top-right of the hero card: "₹3,251/day" + a small badge comparing with
+ * last month's daily average. Spending, so DOWN is good (green ↓) and UP is
+ * bad (red ↑). Within ±2% it's "≈ same" in a neutral tone.
+ */
+@Composable
+private fun HeroAverageChip(avg: HeroAverage) {
+    val ink = HomeTokens.onAccent()
+    val pct = avg.changePercent
+    val flat = kotlin.math.abs(pct) < 2.0
+    val up = pct > 0
+    val badgeBg = when {
+        flat -> ink.copy(alpha = 0.14f)
+        up -> Color(0xFFC62828)
+        else -> Color(0xFF0B5D43)
+    }
+    val badgeText = when {
+        flat -> "≈ same"
+        kotlin.math.abs(pct) >= 999 -> if (up) "↑ 999%+" else "↓ 99%"
+        else -> "${if (up) "↑" else "↓"} ${kotlin.math.abs(pct).toInt()}%"
+    }
+    val a11y = "Average ${formatRupeeIndian(kotlin.math.round(avg.perDay))} a day excluding trips, " +
+        if (flat) "about the same as ${avg.previousLabel}"
+        else "${kotlin.math.abs(pct).toInt()} percent ${if (up) "more" else "less"} than ${avg.previousLabel}"
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(ink.copy(alpha = 0.10f))
+            .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
+            .semantics(mergeDescendants = true) { contentDescription = a11y },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "${formatRupeeIndian(kotlin.math.round(avg.perDay))}/day",
+            style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+            fontWeight = FontWeight.Bold,
+            color = ink,
+            maxLines = 1
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            badgeText,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = if (flat) ink else Color.White,
+            maxLines = 1,
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(badgeBg)
+                .padding(horizontal = 7.dp, vertical = 3.dp)
+        )
     }
 }
 
@@ -1523,39 +1828,283 @@ private fun BalanceChip(
     }
 }
 
+/**
+ * Account card designs, modelled on modern bank-card art: each one is a
+ * gradient, a pattern (arc / waves / ribbons) and a glossy shine. Slice
+ * always gets the Slice purple with ribbons; every other account gets a
+ * stable design picked from its bank + number, so the same card always
+ * looks the same and neighbours usually differ.
+ */
+private enum class CardPattern { Arc, Waves, Ribbons, Smooth }
+
+private class AccountCardStyle(
+    val gradient: List<Color>,
+    val pattern: CardPattern,
+    val ink: Color = Color.White,
+    val accent: Color = Color.White.copy(alpha = 0.92f)
+)
+
+private val SliceCardStyle = AccountCardStyle(
+    gradient = listOf(Color(0xFF5A0FB4), Color(0xFFA020E8), Color(0xFFC63AF0)),
+    pattern = CardPattern.Ribbons
+)
+
+// Cash: deep green with soft waves (distinct from the bank card styles).
+private val CashCardStyle = AccountCardStyle(
+    gradient = listOf(Color(0xFF0E3B2E), Color(0xFF1B6B4F), Color(0xFF2FD39A)),
+    pattern = CardPattern.Waves
+)
+
+private val AccountCardStyles = listOf(
+    // Charcoal with a big soft arc
+    AccountCardStyle(listOf(Color(0xFF242427), Color(0xFF38383C)), CardPattern.Arc),
+    // Teal → mint with flowing waves
+    AccountCardStyle(listOf(Color(0xFF1C76AE), Color(0xFF2FA7B8), Color(0xFF7FE3D2)), CardPattern.Waves),
+    // Ocean blue fading to plum, smooth
+    AccountCardStyle(listOf(Color(0xFF7A3E9C), Color(0xFF3E7FD8), Color(0xFF23A8E6)), CardPattern.Smooth),
+    // Indigo → periwinkle ribbons
+    AccountCardStyle(listOf(Color(0xFF34237E), Color(0xFF5B45C8), Color(0xFF7D73F2)), CardPattern.Ribbons),
+    // Sunset orange → rose with an arc
+    AccountCardStyle(listOf(Color(0xFFD9466F), Color(0xFFF07A55), Color(0xFFF6A44C)), CardPattern.Arc),
+    // Emerald waves
+    AccountCardStyle(listOf(Color(0xFF0B5D43), Color(0xFF178A62), Color(0xFF3FC28D)), CardPattern.Waves)
+)
+
+private fun accountCardStyle(summary: AccountSpendingSummary): AccountCardStyle {
+    val bank = summary.bank.lowercase()
+    if (summary.isCash) return CashCardStyle
+    if (summary.accountIdentifier == null || "slice" in bank) return SliceCardStyle
+    val key = "${summary.bank}|${summary.accountIdentifier}".hashCode()
+    return AccountCardStyles[Math.floorMod(key, AccountCardStyles.size)]
+}
+
+/** Paints gradient, pattern and shine for one card. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAccountCard(style: AccountCardStyle) {
+    val w = size.width
+    val h = size.height
+    // Base: diagonal gradient from bottom-left to top-right.
+    drawRect(Brush.linearGradient(style.gradient, start = Offset(0f, h), end = Offset(w, 0f)))
+
+    when (style.pattern) {
+        CardPattern.Arc -> {
+            // One large lighter disc sweeping in from the right.
+            drawCircle(Color.White.copy(alpha = 0.07f), radius = h * 1.05f, center = Offset(w * 1.02f, h * 0.55f))
+            drawCircle(Color.White.copy(alpha = 0.04f), radius = h * 0.62f, center = Offset(w * 1.02f, h * 0.55f))
+        }
+        CardPattern.Waves -> {
+            // Two layered flowing waves across the top and a soft peak at the bottom.
+            val top = androidx.compose.ui.graphics.Path().apply {
+                moveTo(0f, h * 0.30f)
+                cubicTo(w * 0.30f, h * 0.05f, w * 0.55f, h * 0.55f, w, h * 0.22f)
+                lineTo(w, 0f); lineTo(0f, 0f); close()
+            }
+            drawPath(top, Color.White.copy(alpha = 0.10f))
+            val mid = androidx.compose.ui.graphics.Path().apply {
+                moveTo(0f, h * 0.62f)
+                cubicTo(w * 0.35f, h * 0.38f, w * 0.65f, h * 0.88f, w, h * 0.52f)
+                lineTo(w, 0f); lineTo(0f, 0f); close()
+            }
+            drawPath(mid, Color.White.copy(alpha = 0.06f))
+            val peak = androidx.compose.ui.graphics.Path().apply {
+                moveTo(w * 0.30f, h); lineTo(w * 0.58f, h * 0.58f); lineTo(w * 0.92f, h); close()
+            }
+            drawPath(peak, Color.White.copy(alpha = 0.07f))
+        }
+        CardPattern.Ribbons -> {
+            // Vertical wavy ribbons, alternating light and dark.
+            val bands = 5
+            for (i in 0 until bands) {
+                val x0 = w * (i + 0.5f) / bands
+                val amp = w * 0.06f
+                val p = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(x0, -2f)
+                    cubicTo(x0 + amp, h * 0.25f, x0 - amp, h * 0.45f, x0, h * 0.5f)
+                    cubicTo(x0 + amp, h * 0.6f, x0 - amp, h * 0.8f, x0, h + 2f)
+                    lineTo(w + 2f, h + 2f); lineTo(w + 2f, -2f); close()
+                }
+                drawPath(p, if (i % 2 == 0) Color.White.copy(alpha = 0.06f) else Color.Black.copy(alpha = 0.06f))
+            }
+        }
+        CardPattern.Smooth -> Unit
+    }
+
+    // Gloss: a soft diagonal shine band plus a faint top sheen.
+    drawRect(
+        Brush.linearGradient(
+            0f to Color.Transparent,
+            0.38f to Color.White.copy(alpha = 0.0f),
+            0.50f to Color.White.copy(alpha = 0.16f),
+            0.62f to Color.White.copy(alpha = 0.0f),
+            1f to Color.Transparent,
+            start = Offset(0f, 0f),
+            end = Offset(w, h)
+        )
+    )
+    drawRect(
+        Brush.verticalGradient(
+            0f to Color.White.copy(alpha = 0.12f),
+            0.4f to Color.Transparent,
+            1f to Color.Black.copy(alpha = 0.10f)
+        )
+    )
+}
+
+/** "ICICI Bank" -> "IC", "IDBI Bank" -> "ID", "UPI payments" -> "UP". */
+private fun bankMonogram(bank: String): String =
+    bank.trim().filter { it.isLetterOrDigit() }.take(2).uppercase().ifEmpty { "₹" }
+
+/**
+ * Accounts while "Hide amounts" is on: one blank card with two edges behind
+ * it. Always the same, whatever the number of cards, so nothing leaks.
+ */
+@Composable
+private fun HiddenAccountsPile() {
+    val material = AppThemeStore.isMaterial
+    val shape = RoundedCornerShape(22.dp)
+    val cardHeight = 132.dp * LocalDensity.current.fontScale.coerceIn(1f, 1.4f)
+    val face = if (material) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF1E2321)
+    val ink = if (material) MaterialTheme.colorScheme.onSurface else Color.White
+    val edge = if (material) MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.14f)
+    Box(modifier = Modifier.width(172.dp + 24.dp).height(cardHeight)) {
+        // Back edges, peeking out on the right.
+        listOf(24.dp to 0.80f, 12.dp to 0.90f).forEach { (dx, scale) ->
+            Box(
+                modifier = Modifier
+                    .offset(x = dx)
+                    .width(172.dp)
+                    .height(cardHeight)
+                    .graphicsLayer { scaleX = scale; scaleY = scale; alpha = 0.55f + (scale - 0.8f) * 2f }
+                    .clip(shape)
+                    .background(face.copy(alpha = 0.85f))
+                    .border(1.dp, edge, shape)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .width(172.dp)
+                .height(cardHeight)
+                .clip(shape)
+                .background(face)
+                .border(1.dp, edge, shape)
+                .padding(16.dp)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.Lock,
+                        contentDescription = null,
+                        tint = ink.copy(alpha = 0.8f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Accounts hidden", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = ink)
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    AmountPrivacy.MASK,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = ink
+                )
+                Text(
+                    "Turn off Hide amounts to see",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ink.copy(alpha = 0.6f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun AccountCarouselCard(
     summary: AccountSpendingSummary,
     shareOfTotal: Float
 ) {
-    val isSlice = summary.accountIdentifier == null
-    val cardAccent = if (isSlice) Color(0xFFA37FF0) else HomeTokens.accent()
+    val isCash = summary.isCash
+    val isSlice = summary.accountIdentifier == null && !isCash
+    val cardStyle = accountCardStyle(summary)
+    // Material You: plain minimal card in the wallpaper colours (no art).
+    val material = AppThemeStore.isMaterial
+    val ink = if (material) MaterialTheme.colorScheme.onSurface else cardStyle.ink
+    val flatFill = MaterialTheme.colorScheme.surfaceVariant
+    val flatEdge = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+    val barColor = if (material) MaterialTheme.colorScheme.primary else cardStyle.accent
+    val shape = RoundedCornerShape(22.dp)
+    // Every card the same size (cards have a taller header than accounts);
+    // grows a little with the system font size so text never clips.
+    val cardHeight = 132.dp * LocalDensity.current.fontScale.coerceIn(1f, 1.4f)
     Box(
         modifier = Modifier
             .width(172.dp)
-            .modernCard(base = HomeTokens.card2(), radius = 22.dp, tint = cardAccent, tintAlpha = 0.10f)
+            .height(cardHeight)
+            .clip(shape)
+            // Gradient + pattern + gloss, same size as before.
+            .then(
+                if (material) Modifier.background(flatFill)
+                else Modifier.drawBehind { drawAccountCard(cardStyle) }
+            )
+            .border(1.dp, if (material) flatEdge else Color.White.copy(alpha = 0.16f), shape)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                // No card/account number = the Slice app's UPI payments (one card).
-                text = summary.accountIdentifier ?: "Slice",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = summary.bank,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.labelSmall,
-                color = HomeTokens.mut()
-            )
-            Spacer(modifier = Modifier.height(10.dp))
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            if (summary.isCard) {
+                // Card (the SMS said "card"): chip + contactless mark, bank
+                // on the left and the number on the right.
+                CardFaceHeader(summary, ink)
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        // No card/account number = the Slice app's UPI payments (one card).
+                        text = if (isCash) "Cash" else summary.accountIdentifier ?: "Slice",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    // Small bank badge (initials), not a card-network logo.
+                    Box(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(ink.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = when {
+                                isCash -> "\u20B9"
+                                isSlice -> "S"
+                                else -> bankMonogram(summary.bank)
+                            },
+                            color = ink,
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Text(
+                    // Slice card: no "UPI payments" caption (empty line keeps card heights equal).
+                    text = when {
+                        isCash -> "In hand"
+                        isSlice -> ""
+                        else -> summary.bank
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ink.copy(alpha = 0.7f)
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
             Text(
                 text = formatRupeeIndian(summary.total),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+                style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
+                fontWeight = FontWeight.Bold,
+                color = ink
             )
             Spacer(modifier = Modifier.height(8.dp))
             // Share bar — this account's slice of the total shown above.
@@ -1564,14 +2113,14 @@ private fun AccountCarouselCard(
                     .fillMaxWidth()
                     .height(4.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(HomeTokens.line())
+                    .background(ink.copy(alpha = 0.16f))
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(shareOfTotal.coerceIn(0.03f, 1f))
                         .height(4.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Brush.horizontalGradient(listOf(cardAccent.copy(alpha = 0.6f), cardAccent)))
+                        .background(barColor)
                 )
             }
         }
@@ -2179,6 +2728,7 @@ private fun FilterDialog(
                 ),
             contentAlignment = Alignment.BottomCenter
         ) {
+            SheetRise {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2372,6 +2922,7 @@ private fun FilterDialog(
                     }
                 }
             }
+            }
         }
     }
 }
@@ -2531,7 +3082,7 @@ private fun FilterPill(
  * explicit opt-in, because that also changes friend balances.
  */
 @Composable
-private fun DeleteTripDialog(
+internal fun DeleteTripDialog(
     trip: Trip,
     expenseCount: Int,
     onDismiss: () -> Unit,
@@ -2633,3 +3184,171 @@ private object HomePeriodStore {
 }
 
 
+
+
+
+/** Top of a card-style account: SIM-like chip, contactless waves, bank badge. */
+@Composable
+private fun CardFaceHeader(summary: AccountSpendingSummary, ink: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(width = 26.dp, height = 20.dp)) {
+            val r = androidx.compose.ui.geometry.CornerRadius(size.height * 0.22f)
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    listOf(Color(0xFFE9E4D8), Color(0xFFB9B2A2), Color(0xFFDCD5C6)),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height)
+                ),
+                cornerRadius = r
+            )
+            // Chip contact lines.
+            val line = Color(0xFF8E8778).copy(alpha = 0.7f)
+            val sw = size.height * 0.06f
+            drawLine(line, Offset(0f, size.height * 0.36f), Offset(size.width, size.height * 0.36f), sw)
+            drawLine(line, Offset(0f, size.height * 0.64f), Offset(size.width, size.height * 0.64f), sw)
+            drawLine(line, Offset(size.width * 0.38f, 0f), Offset(size.width * 0.38f, size.height), sw)
+            drawLine(line, Offset(size.width * 0.62f, 0f), Offset(size.width * 0.62f, size.height), sw)
+            drawRoundRect(
+                color = Color(0xFFD7D0C0),
+                topLeft = Offset(size.width * 0.38f, size.height * 0.36f),
+                size = androidx.compose.ui.geometry.Size(size.width * 0.24f, size.height * 0.28f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(sw)
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        // Contactless (NFC) waves.
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(14.dp)) {
+            val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = size.width * 0.11f,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round
+            )
+            listOf(0.28f, 0.55f, 0.82f).forEach { f ->
+                val d = size.width * f * 2f
+                drawArc(
+                    color = ink.copy(alpha = 0.85f),
+                    startAngle = -45f,
+                    sweepAngle = 90f,
+                    useCenter = false,
+                    topLeft = Offset(-d / 2f, size.height / 2f - d / 2f),
+                    size = androidx.compose.ui.geometry.Size(d, d),
+                    style = stroke
+                )
+            }
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(ink.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = bankMonogram(summary.bank),
+                color = ink,
+                fontSize = 8.5.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
+    }
+    Spacer(modifier = Modifier.height(8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = summary.bank,
+            style = MaterialTheme.typography.labelSmall,
+            color = ink.copy(alpha = 0.7f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = summary.accountIdentifier.orEmpty(),
+            style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+            fontWeight = FontWeight.Bold,
+            color = ink,
+            maxLines = 1
+        )
+    }
+}
+
+
+/** Hero chip in trip mode: the trip's dates ("3 – 9 Oct"), not clickable. */
+@Composable
+private fun TripDatesChip(trip: Trip) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color.White.copy(alpha = 0.22f))
+            .border(1.dp, Color.White.copy(alpha = 0.38f), RoundedCornerShape(50))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.CalendarMonth,
+            contentDescription = null,
+            tint = HomeTokens.onAccent(),
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            trip.dateRangeLabel(),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = HomeTokens.onAccent(),
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * Friend balances from one trip's splits only. Uses the per-expense paid-back
+ * status (settle-ups applied to the oldest splits first), so a trip shows
+ * what's still open from THAT trip.
+ */
+internal fun tripFriendBalances(
+    tripExpenses: List<ExpenseWithParticipants>,
+    settlement: Map<Int, SettleStatus.ExpenseSettlement>,
+    friends: List<Friend>
+): Map<Int, FriendBalance> {
+    val byName = friends.associateBy { it.name.trim().lowercase() }
+    val out = mutableMapOf<Int, FriendBalance>()
+    tripExpenses.forEach { e ->
+        settlement[e.expense.id]?.parts?.forEach { part ->
+            val friend = byName[part.friend.trim().lowercase()] ?: return@forEach
+            val cur = out[friend.id] ?: FriendBalance()
+            out[friend.id] = if (part.friendOwesMe) {
+                cur.copy(owedToYou = cur.owedToYou + part.remaining, totalSplitShare = cur.totalSplitShare + part.share)
+            } else {
+                cur.copy(youOwe = cur.youOwe + part.remaining, totalSplitShare = cur.totalSplitShare + part.share)
+            }
+        }
+    }
+    return out
+}
+
+
+/** Home on a past month: what friends owed you from that month, and how much is settled. */
+data class PastMonthSplits(val label: String, val owed: Double, val settled: Double, val youOwed: Double)
+
+internal fun pastMonthSplits(
+    label: String,
+    monthExpenses: List<ExpenseWithParticipants>,
+    settlement: Map<Int, SettleStatus.ExpenseSettlement>
+): PastMonthSplits {
+    var owed = 0.0
+    var settled = 0.0
+    var youOwed = 0.0
+    monthExpenses.forEach { e ->
+        settlement[e.expense.id]?.parts?.forEach { p ->
+            if (p.friendOwesMe) {
+                owed += p.share
+                settled += p.cleared
+            } else {
+                youOwed += p.share
+            }
+        }
+    }
+    return PastMonthSplits(label, owed, settled, youOwed)
+}

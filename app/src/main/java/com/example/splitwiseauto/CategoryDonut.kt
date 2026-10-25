@@ -41,6 +41,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.BoxWithConstraints
 import kotlin.math.round
 
 /**
@@ -97,10 +101,21 @@ fun CategoryDonutCard(
             color = onSurface
         )
         Spacer(Modifier.height(14.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(148.dp), contentAlignment = Alignment.Center) {
+        // Responsive: side by side when there's room, otherwise the ring on
+        // top and the list full width below (narrow screens / big fonts).
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val fontScale = LocalDensity.current.fontScale
+            // Read once here: inside Row/Column scopes below, maxWidth isn't
+            // reachable as an implicit receiver.
+            val boxWidth = maxWidth
+            // Legend needs ~150dp at normal font size (name · % · amount);
+            // bigger fonts need proportionally more.
+            val legendRoom = maxWidth - minOf(148.dp, maxWidth * 0.42f) - 14.dp
+            val stacked = legendRoom < 150.dp * fontScale
+            val donut: @Composable (Dp) -> Unit = { ringSize ->
+            Box(modifier = Modifier.size(ringSize), contentAlignment = Alignment.Center) {
                 Canvas(modifier = Modifier
-                    .size(148.dp)
+                    .size(ringSize)
                     .then(if (onItemClick == null) Modifier else Modifier.pointerInput(items) {
                         detectTapGestures { p ->
                             // Which slice was tapped: angle from 12 o'clock, clockwise.
@@ -162,19 +177,33 @@ fun CategoryDonutCard(
                     }
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // Sized from the ring (dp), not the system font size, so
+                    // the centre text always fits inside the ring — phones
+                    // with a large font/display size (e.g. OnePlus) clipped it.
                     Text(
                         formatRupeeIndian(round(items.sumOf { it.total })),
-                        fontSize = 17.sp,
+                        fontSize = ringText(ringSize, 0.115f),
                         fontWeight = FontWeight.Bold,
                         color = onSurface,
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = ringSize * 0.68f)
                     )
-                    Text("Total spent", fontSize = 11.sp, color = muted)
-                    Text(periodLabel, fontSize = 10.5.sp, color = muted.copy(alpha = 0.5f), textAlign = TextAlign.Center)
+                    Text("Total spent", fontSize = ringText(ringSize, 0.074f), color = muted, maxLines = 1)
+                    Text(
+                        periodLabel,
+                        fontSize = ringText(ringSize, 0.07f),
+                        color = muted.copy(alpha = 0.5f),
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = ringSize * 0.68f)
+                    )
                 }
             }
-            Spacer(Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            }
+            val legend: @Composable (Modifier) -> Unit = { legendModifier ->
+            Column(modifier = legendModifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 val visible = if (expanded) items else items.take(6)
                 visible.forEach { item -> LegendRow(item, onSurface, muted, onItemClick) }
                 if (items.size > 6) {
@@ -182,16 +211,35 @@ fun CategoryDonutCard(
                         if (expanded) "Show less" else "+${items.size - 6} more",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (dark) Color(0xFF2FD39A) else Color(0xFF14A87C),
+                        color = Brand.accent(),
                         modifier = Modifier
                             .padding(top = 4.dp, start = 36.dp)
                             .clickable { expanded = !expanded }
                     )
                 }
             }
+            }
+            if (stacked) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    donut(minOf(168.dp, boxWidth * 0.6f))
+                    Spacer(Modifier.height(14.dp))
+                    legend(Modifier.fillMaxWidth())
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    donut(minOf(148.dp, boxWidth * 0.42f))
+                    Spacer(Modifier.width(14.dp))
+                    legend(Modifier.weight(1f))
+                }
+            }
         }
     }
 }
+
+/** Text size that scales with the ring (dp-based, ignores system font scale). */
+@Composable
+private fun ringText(ringSize: Dp, fraction: Float): androidx.compose.ui.unit.TextUnit =
+    with(LocalDensity.current) { (ringSize * fraction).toSp() }
 
 @Composable
 private fun LegendRow(
